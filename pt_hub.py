@@ -4695,12 +4695,13 @@ class PowerTraderHub(tk.Tk):
                     format=serialization.PublicFormat.Raw,
                 )
 
-                # Store private key in a compatible format (64 bytes like tweetnacl secretKey: seed + pub)
-                secret64 = seed + pub_raw
-                private_b64_state["value"] = base64.b64encode(secret64).decode("utf-8")
+                # Store PRIVATE key as base64(seed32) because pt_thinker.py uses nacl.signing.SigningKey(seed)
+                # and it requires exactly 32 bytes.
+                private_b64_state["value"] = base64.b64encode(seed).decode("utf-8")
 
                 # Show what you paste into Robinhood: base64(raw public key)
                 _set_pub_text(base64.b64encode(pub_raw).decode("utf-8"))
+
 
                 messagebox.showinfo(
                     "Step 1 complete",
@@ -4864,6 +4865,30 @@ class PowerTraderHub(tk.Tk):
                 if not priv_b64:
                     messagebox.showerror("Missing private key", "Step 1: click 'Generate Keys' first.")
                     return
+
+                # Normalize private key so pt_thinker.py can load it:
+                # - Accept 32 bytes (seed) OR 64 bytes (seed+pub) from older hub versions
+                # - Save ONLY base64(seed32) to r_secret.txt
+                try:
+                    raw = base64.b64decode(priv_b64)
+                    if len(raw) == 64:
+                        raw = raw[:32]
+                        priv_b64 = base64.b64encode(raw).decode("utf-8")
+                        private_b64_state["value"] = priv_b64  # keep UI state consistent
+                    elif len(raw) != 32:
+                        messagebox.showerror(
+                            "Bad private key",
+                            f"Your private key decodes to {len(raw)} bytes, but it must be 32 bytes.\n\n"
+                            "Click 'Generate Keys' again to create a fresh keypair."
+                        )
+                        return
+                except Exception as e:
+                    messagebox.showerror(
+                        "Bad private key",
+                        f"Couldn't decode the private key as base64.\n\nError:\n{e}"
+                    )
+                    return
+
                 if not api_key:
                     messagebox.showerror("Missing API key", "Step 2: paste your API key from Robinhood first.")
                     return
@@ -4873,6 +4898,7 @@ class PowerTraderHub(tk.Tk):
                         "For safety, please check the box confirming you understand r_secret.txt is private."
                     )
                     return
+
 
                 # Small sanity warning (don’t block, just help)
                 if len(api_key) < 10:
