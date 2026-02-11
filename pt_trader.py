@@ -357,7 +357,7 @@ class CryptoAPITrading:
         self.path_map = dict(base_paths)
 
         _log("[INIT] Connecting to Coinbase API...")
-        self.client = RESTClient(api_key=CB_API_KEY, api_secret=CB_API_SECRET)
+        self.client = RESTClient(api_key=CB_API_KEY, api_secret=CB_API_SECRET, timeout=10)
         _log("[INIT] Coinbase client ready.")
 
         self.dca_levels_triggered = {}  # Track DCA levels for each crypto
@@ -646,8 +646,8 @@ class CryptoAPITrading:
                 "average_price": avg_price,
                 "total_fees": total_fees,
             }
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[ERROR] _get_order_by_id({order_id[:12]}...): {e}")
         return None
 
     def _extract_fill_from_order(self, order: dict) -> tuple:

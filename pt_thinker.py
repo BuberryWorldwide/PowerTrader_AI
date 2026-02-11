@@ -25,7 +25,7 @@ _CB_CLIENT = None  # lazy-init so import doesn't explode if creds missing
 
 class CoinbaseMarketData:
     def __init__(self, api_key: str, api_secret: str):
-        self.client = RESTClient(api_key=api_key, api_secret=api_secret)
+        self.client = RESTClient(api_key=api_key, api_secret=api_secret, timeout=10)
 
     def get_current_ask(self, symbol: str) -> float:
         symbol = (symbol or "").strip().upper()
@@ -535,6 +535,7 @@ def step_coin(sym: str):
 			closePrice = float(working_minute[2])
 			break
 		except Exception:
+			time.sleep(0.5)
 			continue
 
 
@@ -699,6 +700,7 @@ def step_coin(sym: str):
 				break
 			except Exception as e:
 				print(e)
+				time.sleep(2)
 				continue
 
 		# IMPORTANT: messages printed below use the bounds currently in state.
@@ -1068,8 +1070,8 @@ try:
 			print(display_cache.get(_sym, _sym + "  (no data yet)"))
 			print("\n" + ("-" * 60) + "\n")
 
-		# small sleep so you don't peg CPU when running many coins
-		time.sleep(0.15)
+		# sleep between full sweeps — neural signals don't change faster than this
+		time.sleep(2)
 
 except Exception:
 	PrintException()
