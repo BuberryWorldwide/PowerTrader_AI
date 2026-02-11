@@ -12,6 +12,7 @@ hub_data/
 gui_settings.json
 __pycache__/
 *.pyc
+CLAUDE.md
 
 # Training data (large, regenerable)
 memories_*.txt
