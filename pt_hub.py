@@ -21,17 +21,109 @@ from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter
 from matplotlib.transforms import blended_transform_factory
 
-DARK_BG = "#070B10"
-DARK_BG2 = "#0B1220"
-DARK_PANEL = "#0E1626"
-DARK_PANEL2 = "#121C2F"
-DARK_BORDER = "#243044"
-DARK_FG = "#C7D1DB"
-DARK_MUTED = "#8B949E"
-DARK_ACCENT = "#00FF66"   
-DARK_ACCENT2 = "#00E5FF"   
-DARK_SELECT_BG = "#17324A"
-DARK_SELECT_FG = "#00FF66"
+# ---------------------------------------------------------------------------
+# Color themes (alacritty-style presets)
+# ---------------------------------------------------------------------------
+THEMES = {
+    "Default": {
+        "bg": "#070B10", "bg2": "#0B1220", "panel": "#0E1626", "panel2": "#121C2F",
+        "border": "#243044", "fg": "#C7D1DB", "muted": "#8B949E",
+        "accent": "#00FF66", "accent2": "#00E5FF", "select_bg": "#17324A", "select_fg": "#00FF66",
+    },
+    "Dracula": {
+        "bg": "#282A36", "bg2": "#21222C", "panel": "#2D2F3D", "panel2": "#343746",
+        "border": "#44475A", "fg": "#F8F8F2", "muted": "#6272A4",
+        "accent": "#50FA7B", "accent2": "#BD93F9", "select_bg": "#44475A", "select_fg": "#50FA7B",
+    },
+    "Palenight": {
+        "bg": "#292D3E", "bg2": "#232738", "panel": "#2F3447", "panel2": "#353A50",
+        "border": "#4B5263", "fg": "#A6ACCD", "muted": "#676E95",
+        "accent": "#C3E88D", "accent2": "#82AAFF", "select_bg": "#3C4157", "select_fg": "#C3E88D",
+    },
+    "Tokyo Night": {
+        "bg": "#1A1B26", "bg2": "#16171F", "panel": "#1E1F2B", "panel2": "#24253A",
+        "border": "#3B3D57", "fg": "#A9B1D6", "muted": "#565F89",
+        "accent": "#9ECE6A", "accent2": "#7AA2F7", "select_bg": "#2A2B3D", "select_fg": "#9ECE6A",
+    },
+    "Catppuccin Mocha": {
+        "bg": "#1E1E2E", "bg2": "#181825", "panel": "#242436", "panel2": "#2A2A3E",
+        "border": "#45475A", "fg": "#CDD6F4", "muted": "#6C7086",
+        "accent": "#A6E3A1", "accent2": "#89B4FA", "select_bg": "#313244", "select_fg": "#A6E3A1",
+    },
+    "Nord": {
+        "bg": "#2E3440", "bg2": "#272C36", "panel": "#3B4252", "panel2": "#434C5E",
+        "border": "#4C566A", "fg": "#ECEFF4", "muted": "#7B88A1",
+        "accent": "#A3BE8C", "accent2": "#88C0D0", "select_bg": "#3B4252", "select_fg": "#A3BE8C",
+    },
+    "Gruvbox": {
+        "bg": "#282828", "bg2": "#1D2021", "panel": "#3C3836", "panel2": "#504945",
+        "border": "#665C54", "fg": "#EBDBB2", "muted": "#928374",
+        "accent": "#B8BB26", "accent2": "#83A598", "select_bg": "#3C3836", "select_fg": "#B8BB26",
+    },
+    "Solarized Dark": {
+        "bg": "#002B36", "bg2": "#00252F", "panel": "#073642", "panel2": "#0A3E4B",
+        "border": "#586E75", "fg": "#839496", "muted": "#657B83",
+        "accent": "#859900", "accent2": "#268BD2", "select_bg": "#073642", "select_fg": "#859900",
+    },
+    "One Dark": {
+        "bg": "#282C34", "bg2": "#21252B", "panel": "#2C313A", "panel2": "#333842",
+        "border": "#3E4451", "fg": "#ABB2BF", "muted": "#5C6370",
+        "accent": "#98C379", "accent2": "#61AFEF", "select_bg": "#3E4451", "select_fg": "#98C379",
+    },
+    "Cyberpunk": {
+        "bg": "#0A0A1A", "bg2": "#06061A", "panel": "#0F0F2A", "panel2": "#14143A",
+        "border": "#2A1A4A", "fg": "#E0D0FF", "muted": "#7A6A9A",
+        "accent": "#FF00FF", "accent2": "#00FFFF", "select_bg": "#1A0A3A", "select_fg": "#FF00FF",
+    },
+    "Rosé Pine": {
+        "bg": "#191724", "bg2": "#1F1D2E", "panel": "#26233A", "panel2": "#2A2740",
+        "border": "#403D52", "fg": "#E0DEF4", "muted": "#6E6A86",
+        "accent": "#9CCFD8", "accent2": "#C4A7E7", "select_bg": "#26233A", "select_fg": "#9CCFD8",
+    },
+    "Kanagawa": {
+        "bg": "#1F1F28", "bg2": "#1A1A22", "panel": "#2A2A37", "panel2": "#2F2F3F",
+        "border": "#54546D", "fg": "#DCD7BA", "muted": "#727169",
+        "accent": "#98BB6C", "accent2": "#7E9CD8", "select_bg": "#2D4F67", "select_fg": "#98BB6C",
+    },
+    "Everforest": {
+        "bg": "#2D353B", "bg2": "#272E33", "panel": "#343F44", "panel2": "#3D484D",
+        "border": "#4F585E", "fg": "#D3C6AA", "muted": "#859289",
+        "accent": "#A7C080", "accent2": "#7FBBB3", "select_bg": "#3D484D", "select_fg": "#A7C080",
+    },
+    "Ayu Dark": {
+        "bg": "#0B0E14", "bg2": "#0D1017", "panel": "#131721", "panel2": "#151A25",
+        "border": "#2A2F3A", "fg": "#BFBDB6", "muted": "#636A72",
+        "accent": "#AAD94C", "accent2": "#39BAE6", "select_bg": "#1A1F29", "select_fg": "#AAD94C",
+    },
+}
+
+def _load_active_theme() -> dict:
+    """Read theme name from gui_settings.json (if it exists), return the color dict."""
+    try:
+        settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_settings.json")
+        if os.path.isfile(settings_path):
+            with open(settings_path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            name = data.get("theme", "Default")
+            if name in THEMES:
+                return THEMES[name]
+    except Exception:
+        pass
+    return THEMES["Default"]
+
+_active_theme = _load_active_theme()
+
+DARK_BG = _active_theme["bg"]
+DARK_BG2 = _active_theme["bg2"]
+DARK_PANEL = _active_theme["panel"]
+DARK_PANEL2 = _active_theme["panel2"]
+DARK_BORDER = _active_theme["border"]
+DARK_FG = _active_theme["fg"]
+DARK_MUTED = _active_theme["muted"]
+DARK_ACCENT = _active_theme["accent"]
+DARK_ACCENT2 = _active_theme["accent2"]
+DARK_SELECT_BG = _active_theme["select_bg"]
+DARK_SELECT_FG = _active_theme["select_fg"]
 
 
 @dataclass
@@ -1517,6 +1609,22 @@ class AccountValueChart(ttk.Frame):
 # Hub App
 # -----------------------------
 
+class _AdoptedProc:
+    """Thin wrapper around an orphaned PID so it behaves like subprocess.Popen for poll()/terminate()."""
+    def __init__(self, pid: int):
+        self.pid = pid
+    def poll(self) -> Optional[int]:
+        try:
+            os.kill(self.pid, 0)  # signal 0 = existence check
+            return None  # still running
+        except OSError:
+            return 1  # dead
+    def terminate(self):
+        try:
+            os.kill(self.pid, 15)  # SIGTERM
+        except OSError:
+            pass
+
 @dataclass
 class ProcInfo:
     name: str
@@ -1614,6 +1722,24 @@ class PowerTraderHub(tk.Tk):
         )
 
         self.proc_trainer_path = os.path.abspath(os.path.join(self.project_dir, self.settings["script_neural_trainer"]))
+
+        # Re-adopt orphaned child processes from a Hub restart (theme change etc.)
+        try:
+            pid_path = os.path.join(self.hub_dir, "_restart_pids.json")
+            if os.path.isfile(pid_path):
+                with open(pid_path, "r", encoding="utf-8") as f:
+                    pids = json.load(f) or {}
+                os.remove(pid_path)
+                if "neural" in pids:
+                    adopted = _AdoptedProc(int(pids["neural"]))
+                    if adopted.poll() is None:  # still alive
+                        self.proc_neural.proc = adopted
+                if "trader" in pids:
+                    adopted = _AdoptedProc(int(pids["trader"]))
+                    if adopted.poll() is None:
+                        self.proc_trader.proc = adopted
+        except Exception:
+            pass
 
         # live log queues
         self.runner_log_q: "queue.Queue[str]" = queue.Queue()
@@ -1988,6 +2114,8 @@ class PowerTraderHub(tk.Tk):
             activebackground=DARK_SELECT_BG,
             activeforeground=DARK_SELECT_FG,
         )
+        m_file.add_command(label="Restart Hub", command=self._restart_hub)
+        m_file.add_separator()
         m_file.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=m_file)
 
@@ -4511,6 +4639,18 @@ class PowerTraderHub(tk.Tk):
         auto_start_var = tk.BooleanVar(value=bool(self.settings.get("auto_start_scripts", False)))
 
         r = 0
+
+        # --- Theme selector ---
+        current_theme = self.settings.get("theme", "Default")
+        if current_theme not in THEMES:
+            current_theme = "Default"
+        theme_var = tk.StringVar(value=current_theme)
+        ttk.Label(frm, text="Theme:").grid(row=r, column=0, sticky="w", padx=(0, 10), pady=6)
+        theme_combo = ttk.Combobox(frm, textvariable=theme_var, values=list(THEMES.keys()), state="readonly", width=25)
+        theme_combo.grid(row=r, column=1, sticky="w", pady=6)
+        ttk.Label(frm, text="(restart Hub to apply)", foreground=DARK_MUTED).grid(row=r, column=2, sticky="w", padx=(10, 0), pady=6)
+        r += 1
+
         add_row(r, "Main neural folder:", main_dir_var, browse="dir"); r += 1
         add_row(r, "Coins (comma):", coins_var); r += 1
         add_row(r, "Trade start level (1-7):", trade_start_level_var); r += 1
@@ -4983,6 +5123,7 @@ class PowerTraderHub(tk.Tk):
                 # Track coins before changes so we can detect newly added coins
                 prev_coins = set([str(c).strip().upper() for c in (self.settings.get("coins") or []) if str(c).strip()])
 
+                self.settings["theme"] = theme_var.get().strip() or "Default"
                 self.settings["main_neural_dir"] = main_dir_var.get().strip()
                 self.settings["coins"] = [c.strip().upper() for c in coins_var.get().split(",") if c.strip()]
                 self.settings["trade_start_level"] = max(1, min(int(float(trade_start_level_var.get().strip())), 7))
@@ -5108,8 +5249,30 @@ class PowerTraderHub(tk.Tk):
 
     # ---- close ----
 
+    def _restart_hub(self) -> None:
+        """Destroy the window and re-exec the process (picks up new theme).
+        Running trader/thinker scripts are left alone — the Hub will re-attach on restart."""
+        # Save child PIDs so the restarted Hub can re-adopt them
+        try:
+            pids = {}
+            if self.proc_neural.proc and self.proc_neural.proc.poll() is None:
+                pids["neural"] = self.proc_neural.proc.pid
+            if self.proc_trader.proc and self.proc_trader.proc.poll() is None:
+                pids["trader"] = self.proc_trader.proc.pid
+            if pids:
+                pid_path = os.path.join(self.hub_dir, "_restart_pids.json")
+                with open(pid_path, "w", encoding="utf-8") as f:
+                    json.dump(pids, f)
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
+
     def _on_close(self) -> None:
-        # Don’t force kill; just stop if running (you can change this later)
+        # Don't force kill; just stop if running (you can change this later)
         try:
             self.stop_all_scripts()
         except Exception:
