@@ -47,24 +47,30 @@ class CoinbaseMarketData:
 def coinbase_current_ask(symbol: str) -> float:
     """
     Returns Coinbase current ASK price for symbols like 'BTC-USD'.
-    Reads creds from cb_key.txt and cb_secret.txt in the same folder as this script.
+    Tries encrypted credentials first, then falls back to plaintext files.
     """
     global _CB_CLIENT
     if _CB_CLIENT is None:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        key_path = os.path.join(base_dir, "cb_key.txt")
-        secret_path = os.path.join(base_dir, "cb_secret.txt")
 
-        if not os.path.isfile(key_path) or not os.path.isfile(secret_path):
-            raise RuntimeError(
-                "Missing cb_key.txt and/or cb_secret.txt next to pt_thinker.py. "
-                "Open the GUI and go to Settings → Coinbase API → Setup to create them."
-            )
+        try:
+            from pt_creds import load_credentials
+            api_key, api_secret = load_credentials(base_dir)
+        except Exception:
+            # Fallback to direct file reads if pt_creds is unavailable
+            key_path = os.path.join(base_dir, "cb_key.txt")
+            secret_path = os.path.join(base_dir, "cb_secret.txt")
 
-        with open(key_path, "r", encoding="utf-8") as f:
-            api_key = (f.read() or "").strip()
-        with open(secret_path, "r", encoding="utf-8") as f:
-            api_secret = (f.read() or "").strip()
+            if not os.path.isfile(key_path) or not os.path.isfile(secret_path):
+                raise RuntimeError(
+                    "Missing Coinbase API credentials. "
+                    "Open the GUI and go to Settings -> Coinbase API -> Setup to create them."
+                )
+
+            with open(key_path, "r", encoding="utf-8") as f:
+                api_key = (f.read() or "").strip()
+            with open(secret_path, "r", encoding="utf-8") as f:
+                api_secret = (f.read() or "").strip()
 
         _CB_CLIENT = CoinbaseMarketData(api_key=api_key, api_secret=api_secret)
 

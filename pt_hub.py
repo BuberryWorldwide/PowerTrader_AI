@@ -1605,6 +1605,171 @@ class AccountValueChart(ttk.Frame):
 
 
 
+class PnLChart(ttk.Frame):
+    """Cumulative P&L step chart with win/loss dots and $0 breakeven line."""
+
+    def __init__(self, parent: tk.Widget, trade_history_path: str):
+        super().__init__(parent)
+        self.trade_history_path = trade_history_path
+        self._last_mtime: Optional[float] = None
+
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=6, pady=6)
+        ttk.Label(top, text="Cumulative P&L").pack(side="left")
+        self.last_update_label = ttk.Label(top, text="Last: N/A")
+        self.last_update_label.pack(side="right")
+
+        self.fig = Figure(figsize=(6.5, 3.5), dpi=100)
+        self.fig.patch.set_facecolor(DARK_BG)
+        self.fig.subplots_adjust(bottom=0.25, right=0.87, top=0.8)
+
+        self.ax = self.fig.add_subplot(111)
+        self._apply_dark_chart_style()
+        self.ax.set_title("Cumulative P&L", color=DARK_FG)
+
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        canvas_w = self.canvas.get_tk_widget()
+        canvas_w.configure(bg=DARK_BG)
+        canvas_w.pack(fill="both", expand=True, padx=0, pady=(0, 6))
+
+        self._last_canvas_px = (0, 0)
+        self._resize_after_id = None
+
+        def _on_canvas_configure(e):
+            try:
+                w = int(e.width)
+                h = int(e.height)
+                if w <= 1 or h <= 1:
+                    return
+                if (w, h) == self._last_canvas_px:
+                    return
+                self._last_canvas_px = (w, h)
+                dpi = float(self.fig.get_dpi() or 100.0)
+                self.fig.set_size_inches(w / dpi, h / dpi, forward=True)
+                if self._resize_after_id:
+                    try:
+                        self.after_cancel(self._resize_after_id)
+                    except Exception:
+                        pass
+                self._resize_after_id = self.after_idle(self.canvas.draw_idle)
+            except Exception:
+                pass
+
+        canvas_w.bind("<Configure>", _on_canvas_configure, add="+")
+
+    def _apply_dark_chart_style(self) -> None:
+        try:
+            self.fig.patch.set_facecolor(DARK_BG)
+            self.ax.set_facecolor(DARK_PANEL)
+            self.ax.tick_params(colors=DARK_FG)
+            for spine in self.ax.spines.values():
+                spine.set_color(DARK_BORDER)
+            self.ax.grid(True, color=DARK_BORDER, linewidth=0.6, alpha=0.35)
+        except Exception:
+            pass
+
+    def refresh(self) -> None:
+        try:
+            m = os.path.getmtime(self.trade_history_path)
+        except Exception:
+            m = None
+        if m == self._last_mtime:
+            return
+        self._last_mtime = m
+
+        self.ax.clear()
+        self._apply_dark_chart_style()
+
+        if not os.path.isfile(self.trade_history_path):
+            self.ax.set_title("P&L — no sells yet", color=DARK_FG)
+            self.canvas.draw_idle()
+            return
+
+        try:
+            with open(self.trade_history_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            return
+
+        # Parse sells with realized profit
+        sells = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if str(obj.get("side", "")).lower() != "sell":
+                    continue
+                pnl = obj.get("realized_profit_usd")
+                if pnl is None:
+                    continue
+                ts = obj.get("ts", 0)
+                sells.append((float(ts), float(pnl)))
+            except Exception:
+                continue
+
+        if not sells:
+            self.ax.set_title("P&L — no sells yet", color=DARK_FG)
+            self.canvas.draw_idle()
+            return
+
+        sells.sort(key=lambda x: x[0])
+
+        # Build cumulative P&L
+        cum_pnl = []
+        running = 0.0
+        for ts, pnl in sells:
+            running += pnl
+            cum_pnl.append((ts, running, pnl))
+
+        xs = list(range(len(cum_pnl)))
+        ys = [c[1] for c in cum_pnl]
+        individual = [c[2] for c in cum_pnl]
+
+        # Step function
+        self.ax.step(xs, ys, where="post", color=DARK_ACCENT, linewidth=1.5)
+
+        # $0 breakeven line
+        self.ax.axhline(y=0, color=DARK_MUTED, linestyle="--", linewidth=0.8, alpha=0.7)
+
+        # Win/loss dots
+        for i, (y, pnl_val) in enumerate(zip(ys, individual)):
+            color = "#00FF66" if pnl_val >= 0 else "#FF4444"
+            self.ax.scatter(i, y, color=color, s=30, zorder=5)
+
+        # Y-axis formatting
+        def pnl_formatter(val, pos):
+            return f"${val:+.2f}"
+        self.ax.yaxis.set_major_formatter(FuncFormatter(pnl_formatter))
+
+        # X-axis: trade numbers
+        if len(xs) <= 20:
+            self.ax.set_xticks(xs)
+            labels = []
+            for ts_val, _, _ in cum_pnl:
+                try:
+                    labels.append(time.strftime("%m/%d\n%H:%M", time.localtime(ts_val)))
+                except Exception:
+                    labels.append("")
+            self.ax.set_xticklabels(labels, fontsize=7, color=DARK_MUTED)
+        else:
+            self.ax.set_xlabel("Trade #", color=DARK_MUTED)
+
+        final_pnl = ys[-1] if ys else 0.0
+        pnl_color = "#00FF66" if final_pnl >= 0 else "#FF4444"
+        self.ax.set_title(f"Cumulative P&L (${final_pnl:+.2f})", color=pnl_color)
+
+        try:
+            self.last_update_label.config(
+                text=f"Last: {time.strftime('%H:%M:%S', time.localtime(cum_pnl[-1][0]))}"
+            )
+        except Exception:
+            self.last_update_label.config(text="Last: N/A")
+
+        self.canvas.draw_idle()
+
+
 # -----------------------------
 # Hub App
 # -----------------------------
@@ -1684,6 +1849,8 @@ class PowerTraderHub(tk.Tk):
         self.trade_history_path = os.path.join(self.hub_dir, "trade_history.jsonl")
         self.pnl_ledger_path = os.path.join(self.hub_dir, "pnl_ledger.json")
         self.account_value_history_path = os.path.join(self.hub_dir, "account_value_history.jsonl")
+        self.signal_log_path = os.path.join(self.hub_dir, "signal_log.jsonl")
+        self.manual_command_path = os.path.join(self.hub_dir, "manual_command.json")
 
         # file written by pt_thinker.py (runner readiness gate used for Start All)
         self.runner_ready_path = os.path.join(self.hub_dir, "runner_ready.json")
@@ -2760,7 +2927,15 @@ class PowerTraderHub(tk.Tk):
             # (even if trader/neural scripts are not running yet).
             try:
                 tab = str(name or "").strip().upper()
-                if tab and tab != "ACCOUNT":
+                if tab == "P&L":
+                    # Immediately refresh P&L chart
+                    try:
+                        if hasattr(self, "pnl_chart") and self.pnl_chart:
+                            self.pnl_chart._last_mtime = None  # force refresh
+                            self.after(1, self.pnl_chart.refresh)
+                    except Exception:
+                        pass
+                elif tab and tab != "ACCOUNT":
                     coin = tab
                     chart = self.charts.get(coin)
                     if chart:
@@ -2839,6 +3014,22 @@ class PowerTraderHub(tk.Tk):
             chart = CandleChart(page, self.fetcher, coin, self._settings_getter, self.trade_history_path)
             chart.pack(fill="both", expand=True)
             self.charts[coin] = chart
+
+        # P&L page
+        pnl_page = ttk.Frame(self.chart_pages_container)
+        self.chart_pages["P&L"] = pnl_page
+
+        pnl_btn = ttk.Button(
+            self.chart_tabs_bar,
+            text="P&L",
+            style="ChartTab.TButton",
+            command=lambda: self._show_chart_page("P&L"),
+        )
+        self.chart_tabs_bar.add(pnl_btn, padx=(0, 6), pady=(0, 6))
+        self._chart_tab_buttons["P&L"] = pnl_btn
+
+        self.pnl_chart = PnLChart(pnl_page, self.trade_history_path)
+        self.pnl_chart.pack(fill="both", expand=True)
 
         # show initial page
         self._show_chart_page("ACCOUNT")
@@ -2961,6 +3152,48 @@ class PowerTraderHub(tk.Tk):
         self.trades_tree.bind("<Configure>", lambda e: self.after_idle(_resize_trades_columns))
         self.after_idle(_resize_trades_columns)
 
+        # --- Manual Buy / Sell controls ---
+        manual_bar = ttk.Frame(trades_frame)
+        manual_bar.pack(fill="x", padx=6, pady=(0, 6))
+
+        ttk.Label(manual_bar, text="Coin:").pack(side="left", padx=(0, 4))
+        self._manual_coin_var = tk.StringVar(value=self.coins[0] if self.coins else "BTC")
+        self._manual_coin_combo = ttk.Combobox(
+            manual_bar, textvariable=self._manual_coin_var,
+            values=self.coins, width=6, state="readonly",
+        )
+        self._manual_coin_combo.pack(side="left", padx=(0, 6))
+
+        ttk.Label(manual_bar, text="$").pack(side="left")
+        self._manual_amount_var = tk.StringVar(value="1.00")
+        manual_amount_entry = ttk.Entry(manual_bar, textvariable=self._manual_amount_var, width=8)
+        manual_amount_entry.pack(side="left", padx=(0, 6))
+
+        ttk.Button(manual_bar, text="Buy", command=self._manual_buy).pack(side="left", padx=(0, 6))
+        ttk.Button(manual_bar, text="Sell All", command=self._manual_sell).pack(side="left", padx=(0, 6))
+
+
+        # Signal log (middle)
+        signal_frame = ttk.LabelFrame(right_bottom_split, text="Signal Log")
+        signal_wrap = ttk.Frame(signal_frame)
+        signal_wrap.pack(fill="both", expand=True, padx=6, pady=6)
+
+        self.signal_list = tk.Listbox(
+            signal_wrap,
+            height=6,
+            bg=DARK_PANEL,
+            fg=DARK_FG,
+            selectbackground=DARK_SELECT_BG,
+            selectforeground=DARK_SELECT_FG,
+            highlightbackground=DARK_BORDER,
+            highlightcolor=DARK_ACCENT,
+            activestyle="none",
+        )
+        signal_ysb = ttk.Scrollbar(signal_wrap, orient="vertical", command=self.signal_list.yview)
+        self.signal_list.configure(yscrollcommand=signal_ysb.set)
+        self.signal_list.pack(side="left", fill="both", expand=True)
+        signal_ysb.pack(side="right", fill="y")
+
 
         # Trade history (bottom)
         hist_frame = ttk.LabelFrame(right_bottom_split, text="Trade History (scroll)")
@@ -2992,7 +3225,8 @@ class PowerTraderHub(tk.Tk):
         right_split.add(charts_frame, weight=3)
         right_split.add(right_bottom_split, weight=2)
 
-        right_bottom_split.add(trades_frame, weight=2)
+        right_bottom_split.add(trades_frame, weight=3)
+        right_bottom_split.add(signal_frame, weight=1)
         right_bottom_split.add(hist_frame, weight=1)
 
         try:
@@ -3247,8 +3481,53 @@ class PowerTraderHub(tk.Tk):
 
 
     def start_trader(self) -> None:
+        # If encrypted credentials exist, prompt for passphrase and pass via env
+        try:
+            from pt_creds import has_encrypted_credentials
+            if has_encrypted_credentials(self.project_dir):
+                pp = os.environ.get("POWERTRADER_PASSPHRASE", "").strip()
+                if not pp:
+                    pp = self._ask_passphrase()
+                    if not pp:
+                        return  # user cancelled
+                    os.environ["POWERTRADER_PASSPHRASE"] = pp
+        except ImportError:
+            pass
+
         self._start_process(self.proc_trader, log_q=self.trader_log_q, prefix="[TRADER] ")
 
+
+    def _ask_passphrase(self) -> Optional[str]:
+        """Show a GUI dialog to get the encryption passphrase."""
+        result = [None]
+        dlg = tk.Toplevel(self)
+        dlg.title("Passphrase Required")
+        dlg.geometry("400x150")
+        dlg.configure(bg=DARK_BG)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text="Enter passphrase to decrypt credentials:").pack(padx=20, pady=(20, 10))
+        pp_var = tk.StringVar()
+        entry = ttk.Entry(dlg, textvariable=pp_var, show="*", width=40)
+        entry.pack(padx=20)
+        entry.focus_set()
+
+        def _ok(*_):
+            result[0] = pp_var.get().strip()
+            dlg.destroy()
+
+        def _cancel():
+            dlg.destroy()
+
+        entry.bind("<Return>", _ok)
+        btn_frame = ttk.Frame(dlg)
+        btn_frame.pack(pady=15)
+        ttk.Button(btn_frame, text="OK", command=_ok).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Cancel", command=_cancel).pack(side="left", padx=6)
+
+        self.wait_window(dlg)
+        return result[0]
 
     def stop_neural(self) -> None:
         self._stop_process(self.proc_neural)
@@ -3698,6 +3977,8 @@ class PowerTraderHub(tk.Tk):
         # trade history (now mtime-cached inside)
         self._refresh_trade_history()
 
+        # signal log (now mtime-cached inside)
+        self._refresh_signal_log()
 
         # charts (throttle)
         now = time.time()
@@ -3706,6 +3987,13 @@ class PowerTraderHub(tk.Tk):
             try:
                 if self.account_chart:
                     self.account_chart.refresh()
+            except Exception:
+                pass
+
+            # P&L chart (internally mtime-cached)
+            try:
+                if hasattr(self, "pnl_chart") and self.pnl_chart:
+                    self.pnl_chart.refresh()
             except Exception:
                 pass
 
@@ -4145,6 +4433,106 @@ class PowerTraderHub(tk.Tk):
 
 
 
+    def _refresh_signal_log(self) -> None:
+        """Refresh the Signal Log listbox from signal_log.jsonl (mtime-cached)."""
+        try:
+            mtime = os.path.getmtime(self.signal_log_path)
+        except Exception:
+            mtime = None
+
+        if getattr(self, "_last_signal_log_mtime", object()) == mtime:
+            return
+        self._last_signal_log_mtime = mtime
+
+        if not os.path.isfile(self.signal_log_path):
+            self.signal_list.delete(0, "end")
+            self.signal_list.insert("end", "(no signal_log.jsonl yet)")
+            return
+
+        try:
+            with open(self.signal_log_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            return
+
+        lines = lines[-100:]
+        self.signal_list.delete(0, "end")
+
+        # Color tags
+        try:
+            self.signal_list.configure(font=("TkFixedFont", 9))
+        except Exception:
+            pass
+
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                t = obj.get("time", "??:??:??")
+                sym = str(obj.get("symbol", "")).ljust(5)
+                action = str(obj.get("action", "")).ljust(12)
+                long_l = obj.get("long_level", "")
+                short_l = obj.get("short_level", "")
+                reason = str(obj.get("reason", ""))
+
+                ls_part = f"L:{long_l} S:{short_l}" if long_l or short_l else ""
+
+                txt = f"{t} | {sym} | {action} | {ls_part:10s} | {reason}"
+                idx = self.signal_list.size()
+                self.signal_list.insert("end", txt)
+
+                # Color code by action
+                act = str(obj.get("action", "")).upper()
+                if act in ("ENTRY", "DCA"):
+                    self.signal_list.itemconfig(idx, fg="#00FF66")
+                elif act == "TRAIL_SELL":
+                    self.signal_list.itemconfig(idx, fg="#FF4444")
+                elif act in ("SKIP", "HOLD", "DCA_SKIP"):
+                    self.signal_list.itemconfig(idx, fg=DARK_MUTED)
+            except Exception:
+                self.signal_list.insert("end", line)
+
+
+    def _manual_buy(self) -> None:
+        """Write a manual buy command for the trader to pick up."""
+        coin = self._manual_coin_var.get().strip().upper()
+        try:
+            amount = float(self._manual_amount_var.get().strip())
+        except (ValueError, TypeError):
+            messagebox.showerror("Invalid amount", "Enter a valid dollar amount.")
+            return
+
+        if amount < 1.0:
+            messagebox.showerror("Too small", "Minimum buy is $1.00.")
+            return
+
+        if not messagebox.askyesno("Confirm Buy", f"Buy ${amount:.2f} of {coin}?"):
+            return
+
+        _safe_write_json(self.manual_command_path, {
+            "action": "buy",
+            "symbol": coin,
+            "amount_usd": amount,
+            "ts": time.time(),
+        })
+
+
+    def _manual_sell(self) -> None:
+        """Write a manual sell-all command for the trader to pick up."""
+        coin = self._manual_coin_var.get().strip().upper()
+
+        if not messagebox.askyesno("Confirm Sell All", f"Sell ALL {coin}?"):
+            return
+
+        _safe_write_json(self.manual_command_path, {
+            "action": "sell",
+            "symbol": coin,
+            "ts": time.time(),
+        })
+
+
     def _refresh_coin_dependent_ui(self, prev_coins: List[str]) -> None:
         """
         After settings change: refresh every coin-driven UI element:
@@ -4172,6 +4560,13 @@ class PowerTraderHub(tk.Tk):
                 cur = (self.trainer_coin_var.get() or "").strip().upper() if hasattr(self, "trainer_coin_var") else ""
                 if self.coins and cur not in self.coins:
                     self.trainer_coin_var.set(self.coins[0])
+
+            # Manual buy/sell coin dropdown
+            if hasattr(self, "_manual_coin_combo") and self._manual_coin_combo.winfo_exists():
+                self._manual_coin_combo["values"] = self.coins
+                cur = (self._manual_coin_var.get() or "").strip().upper()
+                if self.coins and cur not in self.coins:
+                    self._manual_coin_var.set(self.coins[0])
 
             # Keep both selectors aligned if both exist
             if hasattr(self, "train_coin_var") and hasattr(self, "trainer_coin_var"):
@@ -4400,9 +4795,9 @@ class PowerTraderHub(tk.Tk):
         if charts_frame is None or (hasattr(charts_frame, "winfo_exists") and not charts_frame.winfo_exists()):
             return
 
-        # Remember selected page (coin or ACCOUNT)
+        # Remember selected page (coin or ACCOUNT or P&L)
         selected = getattr(self, "_current_chart_page", "ACCOUNT")
-        if selected not in (["ACCOUNT"] + list(self.coins)):
+        if selected not in (["ACCOUNT", "P&L"] + list(self.coins)):
             selected = "ACCOUNT"
 
         # Destroy existing tab bar + pages container (clean rebuild)
@@ -4486,6 +4881,22 @@ class PowerTraderHub(tk.Tk):
             chart = CandleChart(page, self.fetcher, coin, self._settings_getter, self.trade_history_path)
             chart.pack(fill="both", expand=True)
             self.charts[coin] = chart
+
+        # P&L page
+        pnl_page = ttk.Frame(self.chart_pages_container)
+        self.chart_pages["P&L"] = pnl_page
+
+        pnl_btn = ttk.Button(
+            self.chart_tabs_bar,
+            text="P&L",
+            style="ChartTab.TButton",
+            command=lambda: self._show_chart_page("P&L"),
+        )
+        self.chart_tabs_bar.add(pnl_btn, padx=(0, 6), pady=(0, 6))
+        self._chart_tab_buttons["P&L"] = pnl_btn
+
+        self.pnl_chart = PnLChart(pnl_page, self.trade_history_path)
+        self.pnl_chart.pack(fill="both", expand=True)
 
         # Restore selection
         self._show_chart_page(selected)
@@ -4745,6 +5156,15 @@ class PowerTraderHub(tk.Tk):
         def _refresh_api_status() -> None:
             key_path, secret_path = _api_paths()
             k, s = _read_api_files()
+
+            # Check encrypted
+            try:
+                from pt_creds import has_encrypted_credentials
+                if has_encrypted_credentials(self.project_dir):
+                    api_status_var.set("Configured ✅ (encrypted)")
+                    return
+            except ImportError:
+                pass
 
             missing = []
             if not k:
@@ -5083,6 +5503,66 @@ class PowerTraderHub(tk.Tk):
                     "  2) Start the trader (pt_trader.py)\n"
                     "If something fails, come back here and click 'Test Credentials'."
                 )
+
+                # Offer to encrypt credentials at rest
+                try:
+                    from pt_creds import encrypt_credentials, decrypt_credentials, delete_plaintext_credentials
+                    if messagebox.askyesno(
+                        "Encrypt credentials?",
+                        "Would you like to encrypt your credentials at rest?\n\n"
+                        "This will:\n"
+                        "  - Create cb_credentials.enc + cb_credentials.salt\n"
+                        "  - Delete cb_key.txt and cb_secret.txt\n"
+                        "  - Require a passphrase to start the trader\n\n"
+                        "You can set POWERTRADER_PASSPHRASE env var to skip the prompt."
+                    ):
+                        pp_dlg = tk.Toplevel(wiz)
+                        pp_dlg.title("Set Passphrase")
+                        pp_dlg.geometry("400x200")
+                        pp_dlg.configure(bg=DARK_BG)
+                        pp_dlg.transient(wiz)
+                        pp_dlg.grab_set()
+
+                        ttk.Label(pp_dlg, text="Choose an encryption passphrase:").pack(padx=20, pady=(15, 5))
+                        pp1_var = tk.StringVar()
+                        pp1_ent = ttk.Entry(pp_dlg, textvariable=pp1_var, show="*", width=40)
+                        pp1_ent.pack(padx=20)
+                        pp1_ent.focus_set()
+
+                        ttk.Label(pp_dlg, text="Confirm passphrase:").pack(padx=20, pady=(10, 5))
+                        pp2_var = tk.StringVar()
+                        pp2_ent = ttk.Entry(pp_dlg, textvariable=pp2_var, show="*", width=40)
+                        pp2_ent.pack(padx=20)
+
+                        def _do_encrypt():
+                            p1 = pp1_var.get().strip()
+                            p2 = pp2_var.get().strip()
+                            if not p1:
+                                messagebox.showerror("Empty", "Passphrase cannot be empty.", parent=pp_dlg)
+                                return
+                            if p1 != p2:
+                                messagebox.showerror("Mismatch", "Passphrases do not match.", parent=pp_dlg)
+                                return
+                            try:
+                                encrypt_credentials(self.project_dir, p1, api_key, api_secret)
+                                # Verify decryption works before deleting originals
+                                test_k, test_s = decrypt_credentials(self.project_dir, p1)
+                                if test_k != api_key or test_s != api_secret:
+                                    raise ValueError("Decryption verification failed")
+                                delete_plaintext_credentials(self.project_dir)
+                                os.environ["POWERTRADER_PASSPHRASE"] = p1
+                                _refresh_api_status()
+                                messagebox.showinfo("Encrypted", "Credentials encrypted and plaintext files deleted.", parent=pp_dlg)
+                                pp_dlg.destroy()
+                            except Exception as enc_e:
+                                messagebox.showerror("Encryption failed", f"Error: {enc_e}", parent=pp_dlg)
+
+                        pp2_ent.bind("<Return>", lambda *_: _do_encrypt())
+                        ttk.Button(pp_dlg, text="Encrypt", command=_do_encrypt).pack(pady=15)
+                        wiz.wait_window(pp_dlg)
+                except ImportError:
+                    pass
+
                 wiz.destroy()
 
             ttk.Button(save_btns, text="Save", command=do_save).pack(side="left")

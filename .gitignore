@@ -1,6 +1,8 @@
 # Credentials — NEVER commit these
 cb_key.txt
 cb_secret.txt
+cb_credentials.enc
+cb_credentials.salt
 r_key.txt
 r_secret.txt
 *.bak_*
