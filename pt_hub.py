@@ -1890,21 +1890,15 @@ class PowerTraderHub(tk.Tk):
 
         self.proc_trainer_path = os.path.abspath(os.path.join(self.project_dir, self.settings["script_neural_trainer"]))
 
-        # Re-adopt orphaned child processes from a Hub restart (theme change etc.)
+        # Check if we're restarting and should auto-start scripts
+        self._restart_auto_start = False
         try:
-            pid_path = os.path.join(self.hub_dir, "_restart_pids.json")
-            if os.path.isfile(pid_path):
-                with open(pid_path, "r", encoding="utf-8") as f:
-                    pids = json.load(f) or {}
-                os.remove(pid_path)
-                if "neural" in pids:
-                    adopted = _AdoptedProc(int(pids["neural"]))
-                    if adopted.poll() is None:  # still alive
-                        self.proc_neural.proc = adopted
-                if "trader" in pids:
-                    adopted = _AdoptedProc(int(pids["trader"]))
-                    if adopted.poll() is None:
-                        self.proc_trader.proc = adopted
+            flag_path = os.path.join(self.hub_dir, "_restart_autostart.json")
+            if os.path.isfile(flag_path):
+                with open(flag_path, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                os.remove(flag_path)
+                self._restart_auto_start = bool(data.get("auto_start", False))
         except Exception:
             pass
 
@@ -1928,7 +1922,7 @@ class PowerTraderHub(tk.Tk):
 
         self._last_chart_refresh = 0.0
 
-        if bool(self.settings.get("auto_start_scripts", False)):
+        if bool(self.settings.get("auto_start_scripts", False)) or self._restart_auto_start:
             self.start_all_scripts()
 
         self.after(250, self._tick)
@@ -5730,19 +5724,27 @@ class PowerTraderHub(tk.Tk):
     # ---- close ----
 
     def _restart_hub(self) -> None:
-        """Destroy the window and re-exec the process (picks up new theme).
-        Running trader/thinker scripts are left alone — the Hub will re-attach on restart."""
-        # Save child PIDs so the restarted Hub can re-adopt them
+        """Destroy the window, stop scripts, re-exec the process, and auto-start if they were running."""
+        # Check if scripts were running so we can restart them after re-exec
+        was_running = False
         try:
-            pids = {}
-            if self.proc_neural.proc and self.proc_neural.proc.poll() is None:
-                pids["neural"] = self.proc_neural.proc.pid
-            if self.proc_trader.proc and self.proc_trader.proc.poll() is None:
-                pids["trader"] = self.proc_trader.proc.pid
-            if pids:
-                pid_path = os.path.join(self.hub_dir, "_restart_pids.json")
-                with open(pid_path, "w", encoding="utf-8") as f:
-                    json.dump(pids, f)
+            neural_alive = bool(self.proc_neural.proc and self.proc_neural.proc.poll() is None)
+            trader_alive = bool(self.proc_trader.proc and self.proc_trader.proc.poll() is None)
+            was_running = neural_alive or trader_alive
+        except Exception:
+            pass
+
+        # Save a flag so the restarted Hub auto-starts scripts
+        try:
+            flag_path = os.path.join(self.hub_dir, "_restart_autostart.json")
+            with open(flag_path, "w", encoding="utf-8") as f:
+                json.dump({"auto_start": was_running}, f)
+        except Exception:
+            pass
+
+        # Stop all scripts cleanly before re-exec (pipes will close anyway)
+        try:
+            self.stop_all_scripts()
         except Exception:
             pass
         try:
