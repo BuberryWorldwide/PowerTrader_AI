@@ -403,6 +403,7 @@ DEFAULT_SETTINGS = {
     "dca_multiplier": 2.0,  # DCA buy size = current value * this (2.0 => total scales ~3x per DCA)
     "dca_levels": [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0],  # Hard DCA triggers (percent PnL)
     "max_dca_buys_per_24h": 2,  # max DCA buys per coin in rolling 24h window (0 disables DCA buys)
+    "dca_cooldown_minutes": 60,  # minimum minutes between DCA buys for the same coin (0 disables)
 
     # --- Trailing Profit Margin settings (used by pt_trader.py; shown in GUI settings) ---
     "pm_start_pct_no_dca": 5.0,
@@ -5024,6 +5025,7 @@ class PowerTraderHub(tk.Tk):
             _dca_levels = DEFAULT_SETTINGS.get("dca_levels", [])
         dca_levels_var = tk.StringVar(value=",".join(str(x) for x in _dca_levels))
         max_dca_var = tk.StringVar(value=str(self.settings.get("max_dca_buys_per_24h", DEFAULT_SETTINGS.get("max_dca_buys_per_24h", 2))))
+        dca_cooldown_var = tk.StringVar(value=str(self.settings.get("dca_cooldown_minutes", DEFAULT_SETTINGS.get("dca_cooldown_minutes", 60))))
 
         # --- Trailing PM settings (editable; hot-reload friendly) ---
         pm_no_dca_var = tk.StringVar(value=str(self.settings.get("pm_start_pct_no_dca", DEFAULT_SETTINGS.get("pm_start_pct_no_dca", 5.0))))
@@ -5109,6 +5111,7 @@ class PowerTraderHub(tk.Tk):
         add_row(r, "DCA multiplier:", dca_mult_var); r += 1
 
         add_row(r, "Max DCA buys / coin (rolling 24h):", max_dca_var); r += 1
+        add_row(r, "DCA cooldown (minutes):", dca_cooldown_var); r += 1
 
         add_row(r, "Trailing PM start % (no DCA):", pm_no_dca_var); r += 1
         add_row(r, "Trailing PM start % (with DCA):", pm_with_dca_var); r += 1
@@ -5634,6 +5637,14 @@ class PowerTraderHub(tk.Tk):
                     md_i = 0
                 self.settings["max_dca_buys_per_24h"] = md_i
 
+                cd = (dca_cooldown_var.get() or "").strip()
+                try:
+                    cd_i = int(float(cd))
+                except Exception:
+                    cd_i = int(self.settings.get("dca_cooldown_minutes", DEFAULT_SETTINGS.get("dca_cooldown_minutes", 60)) or 60)
+                if cd_i < 0:
+                    cd_i = 0
+                self.settings["dca_cooldown_minutes"] = cd_i
 
                 # --- Trailing PM settings ---
                 try:

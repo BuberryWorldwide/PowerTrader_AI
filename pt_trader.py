@@ -50,6 +50,7 @@ _gui_settings_cache = {
 	"dca_multiplier": 2.0,
 	"dca_levels": [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0],
 	"max_dca_buys_per_24h": 2,
+	"dca_cooldown_minutes": 60,
 
 	# Trailing PM settings (defaults match previous hardcoded behavior)
 	"pm_start_pct_no_dca": 5.0,
@@ -139,6 +140,13 @@ def _load_gui_settings() -> dict:
 		if max_dca_buys_per_24h < 0:
 			max_dca_buys_per_24h = 0
 
+		dca_cooldown_minutes = data.get("dca_cooldown_minutes", _gui_settings_cache.get("dca_cooldown_minutes", 60))
+		try:
+			dca_cooldown_minutes = int(float(dca_cooldown_minutes))
+		except Exception:
+			dca_cooldown_minutes = int(_gui_settings_cache.get("dca_cooldown_minutes", 60))
+		if dca_cooldown_minutes < 0:
+			dca_cooldown_minutes = 0
 
 		# --- Trailing PM settings ---
 		pm_start_pct_no_dca = data.get("pm_start_pct_no_dca", _gui_settings_cache.get("pm_start_pct_no_dca", 5.0))
@@ -174,6 +182,7 @@ def _load_gui_settings() -> dict:
 		_gui_settings_cache["dca_multiplier"] = dca_multiplier
 		_gui_settings_cache["dca_levels"] = dca_levels
 		_gui_settings_cache["max_dca_buys_per_24h"] = max_dca_buys_per_24h
+		_gui_settings_cache["dca_cooldown_minutes"] = dca_cooldown_minutes
 
 		_gui_settings_cache["pm_start_pct_no_dca"] = pm_start_pct_no_dca
 		_gui_settings_cache["pm_start_pct_with_dca"] = pm_start_pct_with_dca
@@ -189,6 +198,7 @@ def _load_gui_settings() -> dict:
 			"dca_multiplier": dca_multiplier,
 			"dca_levels": list(dca_levels),
 			"max_dca_buys_per_24h": max_dca_buys_per_24h,
+			"dca_cooldown_minutes": dca_cooldown_minutes,
 
 			"pm_start_pct_no_dca": pm_start_pct_no_dca,
 			"pm_start_pct_with_dca": pm_start_pct_with_dca,
@@ -237,6 +247,7 @@ START_ALLOC_PCT = 0.005
 DCA_MULTIPLIER = 2.0
 DCA_LEVELS = [-2.5, -5.0, -10.0, -20.0, -30.0, -40.0, -50.0]
 MAX_DCA_BUYS_PER_24H = 2
+DCA_COOLDOWN_MINUTES = 60  # minimum minutes between DCA buys for the same coin
 
 # Trailing PM hot-reload globals (defaults match previous hardcoded behavior)
 TRAILING_GAP_PCT = 0.5
@@ -254,11 +265,11 @@ def _refresh_paths_and_symbols():
 	"""
 	Hot-reload GUI settings while trader is running.
 	Updates globals: crypto_symbols, main_dir, base_paths,
-	                TRADE_START_LEVEL, START_ALLOC_PCT, DCA_MULTIPLIER, DCA_LEVELS, MAX_DCA_BUYS_PER_24H,
+	                TRADE_START_LEVEL, START_ALLOC_PCT, DCA_MULTIPLIER, DCA_LEVELS, MAX_DCA_BUYS_PER_24H, DCA_COOLDOWN_MINUTES,
 	                TRAILING_GAP_PCT, PM_START_PCT_NO_DCA, PM_START_PCT_WITH_DCA
 	"""
 	global crypto_symbols, main_dir, base_paths
-	global TRADE_START_LEVEL, START_ALLOC_PCT, DCA_MULTIPLIER, DCA_LEVELS, MAX_DCA_BUYS_PER_24H
+	global TRADE_START_LEVEL, START_ALLOC_PCT, DCA_MULTIPLIER, DCA_LEVELS, MAX_DCA_BUYS_PER_24H, DCA_COOLDOWN_MINUTES
 	global TRAILING_GAP_PCT, PM_START_PCT_NO_DCA, PM_START_PCT_WITH_DCA
 	global _last_settings_mtime
 
@@ -295,6 +306,12 @@ def _refresh_paths_and_symbols():
 	if MAX_DCA_BUYS_PER_24H < 0:
 		MAX_DCA_BUYS_PER_24H = 0
 
+	try:
+		DCA_COOLDOWN_MINUTES = int(float(s.get("dca_cooldown_minutes", DCA_COOLDOWN_MINUTES) or DCA_COOLDOWN_MINUTES))
+	except Exception:
+		DCA_COOLDOWN_MINUTES = int(DCA_COOLDOWN_MINUTES)
+	if DCA_COOLDOWN_MINUTES < 0:
+		DCA_COOLDOWN_MINUTES = 0
 
 	# Trailing PM hot-reload values
 	TRAILING_GAP_PCT = float(s.get("trailing_gap_pct", TRAILING_GAP_PCT) or TRAILING_GAP_PCT)
@@ -408,6 +425,7 @@ class CryptoAPITrading:
 
         # --- DCA rate-limit (per trade, per coin, rolling 24h window) ---
         self.max_dca_buys_per_24h = int(MAX_DCA_BUYS_PER_24H)
+        self.dca_cooldown_minutes = int(DCA_COOLDOWN_MINUTES)
         self.dca_window_seconds = 24 * 60 * 60
 
         self._dca_buy_ts = {}         # { "BTC": [ts, ts, ...] } (DCA buys only)
@@ -1500,6 +1518,7 @@ class CryptoAPITrading:
             self.path_map = dict(base_paths)
             self.dca_levels = list(DCA_LEVELS)
             self.max_dca_buys_per_24h = int(MAX_DCA_BUYS_PER_24H)
+            self.dca_cooldown_minutes = int(DCA_COOLDOWN_MINUTES)
 
             # Trailing PM settings (hot-reload)
             old_sig = getattr(self, "_last_trailing_settings_sig", None)
@@ -1921,6 +1940,16 @@ class CryptoAPITrading:
 
 
                 recent_dca = self._dca_window_count(symbol)
+                cooldown_min = int(getattr(self, "dca_cooldown_minutes", 60))
+                cooldown_ok = True
+                if cooldown_min > 0:
+                    last_ts_list = list(self._dca_buy_ts.get(symbol, []) or [])
+                    if last_ts_list:
+                        secs_since = time.time() - max(last_ts_list)
+                        if secs_since < cooldown_min * 60:
+                            cooldown_ok = False
+                            mins_left = (cooldown_min * 60 - secs_since) / 60.0
+
                 if recent_dca >= int(getattr(self, "max_dca_buys_per_24h", 2)):
                     self._log_signal(symbol, "DCA_SKIP", f"24h limit ({recent_dca}/{self.max_dca_buys_per_24h})",
                         details={"stage": current_stage, "reason": reason})
@@ -1928,6 +1957,11 @@ class CryptoAPITrading:
                         f"  Skipping DCA for {symbol}. "
                         f"Already placed {recent_dca} DCA buys in the last 24h (max {self.max_dca_buys_per_24h})."
                     )
+
+                elif not cooldown_ok:
+                    self._log_signal(symbol, "DCA_SKIP", f"Cooldown ({mins_left:.0f}m left of {cooldown_min}m)",
+                        details={"stage": current_stage, "reason": reason})
+                    _log(f"  Skipping DCA for {symbol}. Cooldown: {mins_left:.0f}m remaining (min {cooldown_min}m between buys).")
 
                 elif dca_amount <= buying_power:
                     response = self.place_buy_order(
