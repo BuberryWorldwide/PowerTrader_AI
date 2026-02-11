@@ -616,12 +616,27 @@ class CryptoAPITrading:
             raw = o["order"] if "order" in o else o
 
             status = str(raw["status"]).lower()
-            filled_size = str(raw.get("filled_size", "0") or "0")
-            avg_price = str(raw.get("average_filled_price", "0") or "0")
-            total_fees = str(raw.get("total_fees", "0") or "0")
-            oid = str(raw.get("order_id", order_id))
+            try:
+                filled_size = str(raw["filled_size"] or "0")
+            except (KeyError, TypeError):
+                filled_size = "0"
+            try:
+                avg_price = str(raw["average_filled_price"] or "0")
+            except (KeyError, TypeError):
+                avg_price = "0"
+            try:
+                total_fees = str(raw["total_fees"] or "0")
+            except (KeyError, TypeError):
+                total_fees = "0"
+            try:
+                oid = str(raw["order_id"])
+            except (KeyError, TypeError):
+                oid = order_id
             side = str(raw["side"]).lower()
-            created = str(raw.get("created_time", ""))
+            try:
+                created = str(raw["created_time"])
+            except (KeyError, TypeError):
+                created = ""
 
             state_map = {"filled": "filled", "cancelled": "canceled", "canceled": "canceled",
                          "expired": "expired", "failed": "failed", "pending": "pending", "open": "pending"}
@@ -1308,13 +1323,23 @@ class CryptoAPITrading:
             raw_orders = resp["orders"]
             results = []
             for o in raw_orders:
+                # SDK returns Order objects, not dicts — use [] with try/except for optional fields
                 oid = str(o["order_id"])
                 status = str(o["status"]).lower()
                 side = str(o["side"]).lower()
                 created = str(o["created_time"])
-                filled_size = str(o.get("filled_size", "0") or "0")
-                avg_price = str(o.get("average_filled_price", "0") or "0")
-                total_fees = str(o.get("total_fees", "0") or "0")
+                try:
+                    filled_size = str(o["filled_size"] or "0")
+                except (KeyError, TypeError):
+                    filled_size = "0"
+                try:
+                    avg_price = str(o["average_filled_price"] or "0")
+                except (KeyError, TypeError):
+                    avg_price = "0"
+                try:
+                    total_fees = str(o["total_fees"] or "0")
+                except (KeyError, TypeError):
+                    total_fees = "0"
 
                 # Normalize Coinbase status to internal state format
                 state_map = {"filled": "filled", "cancelled": "canceled", "canceled": "canceled",
@@ -2354,6 +2379,7 @@ class CryptoAPITrading:
             except Exception as e:
                 _log(f"[ERROR] Exception in manage_trades loop: {e}")
                 _log(traceback.format_exc())
+                time.sleep(5)
 
 if __name__ == "__main__":
     trading_bot = CryptoAPITrading()
