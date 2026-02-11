@@ -730,82 +730,24 @@ class CryptoAPITrading:
         return None
 
     def _reconcile_pending_orders(self) -> None:
-        """
-        If the hub/trader restarts mid-order, we keep the pre-order buying_power on disk and
-        finish the accounting once the order shows as terminal in Coinbase.
-        """
+        """Clear any stale pending orders on startup.
+        We no longer poll get_order() (it hangs indefinitely for certain IDs).
+        Market orders fill instantly, so any pending entries are stale leftovers."""
         try:
             pending = self._pnl_ledger.get("pending_orders", {})
             if not isinstance(pending, dict) or not pending:
                 _log("[RECONCILE] No pending orders to reconcile.")
                 return
 
-            _log(f"[RECONCILE] Found {len(pending)} pending order(s) to reconcile...")
-
+            _log(f"[RECONCILE] Clearing {len(pending)} stale pending order(s)...")
             for order_id, info in list(pending.items()):
-                try:
-                    symbol = str(info.get("symbol", "")).strip()
-                    side = str(info.get("side", "")).strip().lower()
-                    bp_before = float(info.get("buying_power_before", 0.0) or 0.0)
-                    _log(f"[RECONCILE] Checking {side} {symbol} order {order_id[:12]}...")
+                symbol = str(info.get("symbol", ""))
+                side = str(info.get("side", ""))
+                _log(f"[RECONCILE]   Cleared {side} {symbol} order {order_id[:12]}...")
 
-                    if self._trade_history_has_order_id(order_id):
-                        _log("[RECONCILE]   Already in trade history — clearing pending entry.")
-                        self._pnl_ledger["pending_orders"].pop(order_id, None)
-                        self._save_pnl_ledger()
-                        continue
-
-                    if not symbol or not side or not order_id:
-                        _log("[RECONCILE]   Invalid entry (missing symbol/side/id) — clearing.")
-                        self._pnl_ledger["pending_orders"].pop(order_id, None)
-                        self._save_pnl_ledger()
-                        continue
-
-                    order = self._wait_for_order_terminal(symbol, order_id, max_retries=30)
-                    if not order:
-                        _log("[RECONCILE]   Could not fetch order after retries — clearing stale entry.")
-                        self._pnl_ledger["pending_orders"].pop(order_id, None)
-                        self._save_pnl_ledger()
-                        continue
-
-                    state = str(order.get("state", "")).lower().strip()
-                    if state != "filled":
-                        _log(f"[RECONCILE]   Order state is '{state}' (not filled) — clearing.")
-                        self._pnl_ledger["pending_orders"].pop(order_id, None)
-                        self._save_pnl_ledger()
-                        continue
-
-                    _log("[RECONCILE]   Order FILLED — recording trade.")
-                    filled_qty, avg_price = self._extract_fill_from_order(order)
-                    bp_after = self._get_buying_power()
-                    bp_delta = float(bp_after) - float(bp_before)
-
-                    self._record_trade(
-                        side=side,
-                        symbol=symbol,
-                        qty=float(filled_qty),
-                        price=float(avg_price) if avg_price is not None else None,
-                        avg_cost_basis=info.get("avg_cost_basis", None),
-                        pnl_pct=info.get("pnl_pct", None),
-                        tag=info.get("tag", None),
-                        order_id=order_id,
-                        fees_usd=None,
-                        buying_power_before=bp_before,
-                        buying_power_after=bp_after,
-                        buying_power_delta=bp_delta,
-                    )
-
-                    self._pnl_ledger["pending_orders"].pop(order_id, None)
-                    self._save_pnl_ledger()
-                    _log("[RECONCILE]   Trade recorded and pending entry cleared.")
-
-                except Exception as e:
-                    _log(f"[RECONCILE]   Error processing {order_id[:12]}...: {e} — clearing.")
-                    self._pnl_ledger["pending_orders"].pop(order_id, None)
-                    self._save_pnl_ledger()
-
+            self._pnl_ledger["pending_orders"] = {}
+            self._save_pnl_ledger()
             _log("[RECONCILE] Done.")
-
         except Exception:
             pass
 
@@ -1509,17 +1451,14 @@ class CryptoAPITrading:
         tag: Optional[str] = None,
     ) -> Any:
         try:
-            # --- exact profit tracking snapshot (BEFORE placing order) ---
             buying_power_before = self._get_buying_power()
 
-            # Coinbase market_order_buy accepts quote_size (USD amount) directly
             resp = self.client.market_order_buy(
                 client_order_id=client_order_id,
                 product_id=symbol,
                 quote_size=str(round(amount_in_usd, 2)),
             )
 
-            # Parse response — SDK typed objects support [] access
             success = resp["success"]
             sr = resp["success_response"]
             order_id = sr["order_id"] if sr else None
@@ -1527,43 +1466,34 @@ class CryptoAPITrading:
             if not success or not order_id:
                 return None
 
-            # Persist the pre-order buying power so restarts can reconcile precisely
-            try:
-                self._pnl_ledger.setdefault("pending_orders", {})
-                self._pnl_ledger["pending_orders"][order_id] = {
-                    "symbol": symbol,
-                    "side": "buy",
-                    "buying_power_before": float(buying_power_before),
-                    "avg_cost_basis": float(avg_cost_basis) if avg_cost_basis is not None else None,
-                    "pnl_pct": float(pnl_pct) if pnl_pct is not None else None,
-                    "tag": tag,
-                    "created_ts": time.time(),
-                }
-                self._save_pnl_ledger()
-            except Exception:
-                pass
+            _log(f"[BUY] Market order placed: {symbol} ${amount_in_usd:.2f} (order {order_id[:12]}...)")
 
-            # Wait until the order is actually complete in the system
-            order = self._wait_for_order_terminal(symbol, order_id)
-            state = str(order.get("state", "")).lower().strip() if isinstance(order, dict) else ""
-            if state != "filled":
-                try:
-                    self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
-                    self._save_pnl_ledger()
-                except Exception:
-                    pass
-                return None
-
-            filled_qty, avg_fill_price = self._extract_fill_from_order(order)
-
+            # Market orders fill instantly on Coinbase — no need to poll get_order()
+            # (get_order hangs indefinitely for certain order IDs, cooking the CPU)
+            # Use current ask price as fill price estimate, buying power delta for actual cost
+            time.sleep(2)  # brief pause for settlement
             buying_power_after = self._get_buying_power()
             buying_power_delta = float(buying_power_after) - float(buying_power_before)
+
+            # Estimate fill price from current market price
+            try:
+                buy_prices, _, _ = self.get_price([symbol])
+                fill_price = buy_prices.get(symbol, 0.0)
+            except Exception:
+                fill_price = 0.0
+
+            # Buy bp_delta should be negative (spending money). If near-zero or positive,
+            # Coinbase hasn't settled — estimate from order amount.
+            if buying_power_delta > -0.01:
+                buying_power_delta = -amount_in_usd
+
+            fill_qty = abs(buying_power_delta) / fill_price if fill_price > 0 else (amount_in_usd / fill_price if fill_price > 0 else 0.0)
 
             self._record_trade(
                 side="buy",
                 symbol=symbol,
-                qty=float(filled_qty),
-                price=float(avg_fill_price) if avg_fill_price is not None else None,
+                qty=float(fill_qty),
+                price=float(fill_price),
                 avg_cost_basis=float(avg_cost_basis) if avg_cost_basis is not None else None,
                 pnl_pct=float(pnl_pct) if pnl_pct is not None else None,
                 tag=tag,
@@ -1573,13 +1503,6 @@ class CryptoAPITrading:
                 buying_power_delta=buying_power_delta,
             )
 
-            try:
-                self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
-                self._save_pnl_ledger()
-            except Exception:
-                pass
-
-            # Return a normalized response dict so callers see success
             return {"id": order_id, "success": True}
 
         except Exception as e:
@@ -1604,7 +1527,6 @@ class CryptoAPITrading:
     ) -> Any:
         response = None
         try:
-            # --- exact profit tracking snapshot (BEFORE placing order) ---
             buying_power_before = self._get_buying_power()
 
             resp = self.client.market_order_sell(
@@ -1621,66 +1543,20 @@ class CryptoAPITrading:
                 return None
 
             response = {"id": order_id, "success": True}
+            _log(f"[SELL] Market order placed: {symbol} qty={asset_quantity} (order {order_id[:12]}...)")
 
-            # Persist the pre-order buying power so restarts can reconcile precisely
-            try:
-                self._pnl_ledger.setdefault("pending_orders", {})
-                self._pnl_ledger["pending_orders"][order_id] = {
-                    "symbol": symbol,
-                    "side": "sell",
-                    "buying_power_before": float(buying_power_before),
-                    "avg_cost_basis": float(avg_cost_basis) if avg_cost_basis is not None else None,
-                    "pnl_pct": float(pnl_pct) if pnl_pct is not None else None,
-                    "tag": tag,
-                    "created_ts": time.time(),
-                }
-                self._save_pnl_ledger()
-            except Exception:
-                pass
+            # Market orders fill instantly — no polling get_order() (it hangs)
+            # Use current bid price and buying power delta for actual P&L
+            time.sleep(2)  # brief pause for settlement
 
-            actual_price = float(expected_price) if expected_price is not None else None
             actual_qty = float(asset_quantity)
-            fees_usd = None
-
             try:
-                match = self._wait_for_order_terminal(symbol, order_id)
-                if not match:
-                    return response
-
-                if str(match.get("state", "")).lower() != "filled":
-                    try:
-                        self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
-                        self._save_pnl_ledger()
-                    except Exception:
-                        pass
-                    return response
-
-                execs = match.get("executions", []) or []
-                total_qty = 0.0
-                total_notional = 0.0
-                for ex in execs:
-                    try:
-                        q = float(ex.get("quantity", 0.0) or 0.0)
-                        p = float(ex.get("effective_price", 0.0) or 0.0)
-                        total_qty += q
-                        total_notional += (q * p)
-                    except Exception:
-                        continue
-
-                if total_qty > 0.0 and total_notional > 0.0:
-                    actual_qty = total_qty
-                    actual_price = total_notional / total_qty
-
-                # Extract fees from Coinbase order total_fees field
-                try:
-                    fees_usd = float(match.get("total_fees", "0") or "0")
-                except Exception:
-                    fees_usd = 0.0
-
+                _, sell_prices, _ = self.get_price([symbol])
+                actual_price = sell_prices.get(symbol, 0.0)
             except Exception:
-                pass
+                actual_price = float(expected_price) if expected_price is not None else 0.0
 
-            if avg_cost_basis is not None and actual_price is not None:
+            if avg_cost_basis is not None and actual_price > 0:
                 try:
                     acb = float(avg_cost_basis)
                     if acb > 0:
@@ -1691,6 +1567,11 @@ class CryptoAPITrading:
             buying_power_after = self._get_buying_power()
             buying_power_delta = float(buying_power_after) - float(buying_power_before)
 
+            # Sell bp_delta should be positive (receiving money). If near-zero or negative,
+            # Coinbase hasn't settled — estimate from qty * price.
+            if buying_power_delta < 0.01 and actual_price > 0:
+                buying_power_delta = float(actual_qty) * float(actual_price)
+
             self._record_trade(
                 side="sell",
                 symbol=symbol,
@@ -1700,7 +1581,7 @@ class CryptoAPITrading:
                 pnl_pct=float(pnl_pct) if pnl_pct is not None else None,
                 tag=tag,
                 order_id=order_id,
-                fees_usd=float(fees_usd) if fees_usd is not None else None,
+                fees_usd=None,  # can't get fills without get_fills() (hangs)
                 buying_power_before=buying_power_before,
                 buying_power_after=buying_power_after,
                 buying_power_delta=buying_power_delta,
