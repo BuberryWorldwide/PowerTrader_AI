@@ -1,18 +1,14 @@
-import base64
 import datetime
 import json
 import uuid
 import time
 import math
 from typing import Any, Dict, Optional
-import requests
-from nacl.signing import SigningKey
 import os
 import colorama
 from colorama import Fore, Style
 import traceback
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.hazmat.primitives import serialization
+from coinbase.rest import RESTClient
 
 # -----------------------------
 # GUI HUB OUTPUTS
@@ -321,24 +317,23 @@ def _refresh_paths_and_symbols():
 
 
 #API STUFF
-API_KEY = ""
-BASE64_PRIVATE_KEY = ""
+CB_API_KEY = ""
+CB_API_SECRET = ""
 
 try:
-    with open('r_key.txt', 'r', encoding='utf-8') as f:
-        API_KEY = (f.read() or "").strip()
-    with open('r_secret.txt', 'r', encoding='utf-8') as f:
-        BASE64_PRIVATE_KEY = (f.read() or "").strip()
+    with open('cb_key.txt', 'r', encoding='utf-8') as f:
+        CB_API_KEY = (f.read() or "").strip()
+    with open('cb_secret.txt', 'r', encoding='utf-8') as f:
+        CB_API_SECRET = (f.read() or "").strip()
 except Exception:
-    API_KEY = ""
-    BASE64_PRIVATE_KEY = ""
+    CB_API_KEY = ""
+    CB_API_SECRET = ""
 
-if not API_KEY or not BASE64_PRIVATE_KEY:
+if not CB_API_KEY or not CB_API_SECRET:
     print(
-        "\n[PowerTrader] Robinhood API credentials not found.\n"
-        "Open the GUI and go to Settings → Robinhood API → Setup / Update.\n"
-        "That wizard will generate your keypair, tell you where to paste the public key on Robinhood,\n"
-        "and will save r_key.txt + r_secret.txt so this trader can authenticate.\n"
+        "\n[PowerTrader] Coinbase API credentials not found.\n"
+        "Open the GUI and go to Settings → Coinbase API → Setup / Update.\n"
+        "That wizard will save cb_key.txt + cb_secret.txt so this trader can authenticate.\n"
     )
     raise SystemExit(1)
 
@@ -347,10 +342,7 @@ class CryptoAPITrading:
         # keep a copy of the folder map (same idea as trader.py)
         self.path_map = dict(base_paths)
 
-        self.api_key = API_KEY
-        private_key_seed = base64.b64decode(BASE64_PRIVATE_KEY)
-        self.private_key = SigningKey(private_key_seed)
-        self.base_url = "https://trading.robinhood.com"
+        self.client = RESTClient(api_key=CB_API_KEY, api_secret=CB_API_SECRET)
 
         self.dca_levels_triggered = {}  # Track DCA levels for each crypto
         self.dca_levels = list(DCA_LEVELS)  # Hard DCA triggers (percent PnL)
@@ -484,14 +476,41 @@ class CryptoAPITrading:
 
     def _get_order_by_id(self, symbol: str, order_id: str) -> Optional[dict]:
         try:
-            orders = self.get_orders(symbol)
-            results = orders.get("results", []) if isinstance(orders, dict) else []
-            for o in results:
-                try:
-                    if o.get("id") == order_id:
-                        return o
-                except Exception:
-                    continue
+            o = self.client.get_order(order_id)
+            # SDK may wrap in {"order": ...} or return the order directly
+            raw = o["order"] if "order" in o else o
+
+            status = str(raw["status"]).lower()
+            filled_size = str(raw.get("filled_size", "0") or "0")
+            avg_price = str(raw.get("average_filled_price", "0") or "0")
+            total_fees = str(raw.get("total_fees", "0") or "0")
+            oid = str(raw.get("order_id", order_id))
+            side = str(raw["side"]).lower()
+            created = str(raw.get("created_time", ""))
+
+            state_map = {"filled": "filled", "cancelled": "canceled", "canceled": "canceled",
+                         "expired": "expired", "failed": "failed", "pending": "pending", "open": "pending"}
+            state = state_map.get(status, status)
+
+            executions = []
+            try:
+                fq = float(filled_size)
+                fp = float(avg_price)
+                if fq > 0 and fp > 0:
+                    executions.append({"quantity": fq, "effective_price": fp})
+            except Exception:
+                pass
+
+            return {
+                "id": oid,
+                "side": side,
+                "state": state,
+                "created_at": created,
+                "executions": executions,
+                "filled_asset_quantity": filled_size,
+                "average_price": avg_price,
+                "total_fees": total_fees,
+            }
         except Exception:
             pass
         return None
@@ -543,7 +562,7 @@ class CryptoAPITrading:
 
     def _wait_for_order_terminal(self, symbol: str, order_id: str) -> Optional[dict]:
         """Blocks until order is filled/canceled/rejected, then returns the order dict."""
-        terminal = {"filled", "canceled", "cancelled", "rejected", "failed", "error"}
+        terminal = {"filled", "canceled", "cancelled", "rejected", "failed", "error", "expired"}
         while True:
             o = self._get_order_by_id(symbol, order_id)
             if not o:
@@ -557,7 +576,7 @@ class CryptoAPITrading:
     def _reconcile_pending_orders(self) -> None:
         """
         If the hub/trader restarts mid-order, we keep the pre-order buying_power on disk and
-        finish the accounting once the order shows as terminal in Robinhood.
+        finish the accounting once the order shows as terminal in Coinbase.
         """
         try:
             pending = self._pnl_ledger.get("pending_orders", {})
@@ -778,10 +797,6 @@ class CryptoAPITrading:
 
     def _write_trader_status(self, status: dict) -> None:
         self._atomic_write_json(TRADER_STATUS_PATH, status)
-
-    @staticmethod
-    def _get_current_timestamp() -> int:
-        return int(datetime.datetime.now(tz=datetime.timezone.utc).timestamp())
 
     @staticmethod
     def _fmt_price(price: float) -> str:
@@ -1094,66 +1109,88 @@ class CryptoAPITrading:
         self._dca_buy_ts[base] = []
 
 
-    def make_api_request(self, method: str, path: str, body: Optional[str] = "") -> Any:
-
-        timestamp = self._get_current_timestamp()
-        headers = self.get_authorization_header(method, path, body, timestamp)
-        url = self.base_url + path
-
+    def get_account(self) -> Any:
+        """Returns dict with 'buying_power' key (USD available balance)."""
         try:
-            if method == "GET":
-                response = requests.get(url, headers=headers, timeout=10)
-            elif method == "POST":
-                response = requests.post(url, headers=headers, json=json.loads(body), timeout=10)
-
-            response.raise_for_status()
-            return response.json()
-        except requests.HTTPError as http_err:
-            try:
-                # Parse and return the JSON error response
-                error_response = response.json()
-                return error_response  # Return the JSON error for further handling
-            except Exception:
-                return None
+            resp = self.client.get_accounts()
+            accounts = resp["accounts"]
+            for acct in accounts:
+                if str(acct["currency"]).upper() == "USD":
+                    val = acct["available_balance"]["value"]
+                    return {"buying_power": float(val)}
+            return {"buying_power": 0.0}
         except Exception:
             return None
 
-    def get_authorization_header(
-            self, method: str, path: str, body: str, timestamp: int
-    ) -> Dict[str, str]:
-        message_to_sign = f"{self.api_key}{timestamp}{path}{method}{body}"
-        signed = self.private_key.sign(message_to_sign.encode("utf-8"))
-
-        return {
-            "x-api-key": self.api_key,
-            "x-signature": base64.b64encode(signed.signature).decode("utf-8"),
-            "x-timestamp": str(timestamp),
-        }
-
-    def get_account(self) -> Any:
-        path = "/api/v1/crypto/trading/accounts/"
-        return self.make_api_request("GET", path)
-
     def get_holdings(self) -> Any:
-        path = "/api/v1/crypto/trading/holdings/"
-        return self.make_api_request("GET", path)
+        """Returns dict with 'results' list of {'asset_code': str, 'total_quantity': str}."""
+        try:
+            resp = self.client.get_accounts()
+            accounts = resp["accounts"]
+            results = []
+            for acct in accounts:
+                currency = str(acct["currency"]).upper()
+                val = float(acct["available_balance"]["value"])
+                if currency != "USD" and val > 0:
+                    results.append({
+                        "asset_code": currency,
+                        "total_quantity": str(val),
+                    })
+            return {"results": results}
+        except Exception:
+            return None
 
     def get_trading_pairs(self) -> Any:
-        path = "/api/v1/crypto/trading/trading_pairs/"
-        response = self.make_api_request("GET", path)
-
-        if not response or "results" not in response:
+        try:
+            resp = self.client.get_products(product_type="SPOT")
+            return list(resp["products"])
+        except Exception:
             return []
-
-        trading_pairs = response.get("results", [])
-        if not trading_pairs:
-            return []
-
-        return trading_pairs
 
     def get_orders(self, symbol: str) -> Any:
-        path = f"/api/v1/crypto/trading/orders/?symbol={symbol}"
-        return self.make_api_request("GET", path)
+        """Returns dict with 'results' list of normalized order dicts."""
+        try:
+            resp = self.client.list_orders(product_ids=[symbol])
+            raw_orders = resp["orders"]
+            results = []
+            for o in raw_orders:
+                oid = str(o["order_id"])
+                status = str(o["status"]).lower()
+                side = str(o["side"]).lower()
+                created = str(o["created_time"])
+                filled_size = str(o.get("filled_size", "0") or "0")
+                avg_price = str(o.get("average_filled_price", "0") or "0")
+                total_fees = str(o.get("total_fees", "0") or "0")
+
+                # Normalize Coinbase status to internal state format
+                state_map = {"filled": "filled", "cancelled": "canceled", "canceled": "canceled",
+                             "expired": "canceled", "failed": "failed", "pending": "pending",
+                             "open": "pending"}
+                state = state_map.get(status, status)
+
+                # Build executions list from fill data
+                executions = []
+                try:
+                    fq = float(filled_size)
+                    fp = float(avg_price)
+                    if fq > 0 and fp > 0:
+                        executions.append({"quantity": fq, "effective_price": fp})
+                except Exception:
+                    pass
+
+                results.append({
+                    "id": oid,
+                    "side": side,
+                    "state": state,
+                    "created_at": created,
+                    "executions": executions,
+                    "filled_asset_quantity": filled_size,
+                    "average_price": avg_price,
+                    "total_fees": total_fees,
+                })
+            return {"results": results}
+        except Exception:
+            return None
 
     def calculate_cost_basis(self):
         holdings = self.get_holdings()
@@ -1214,35 +1251,49 @@ class CryptoAPITrading:
         sell_prices = {}
         valid_symbols = []
 
-        for symbol in symbols:
-            if symbol == "USDC-USD":
+        query_symbols = [s for s in symbols if s != "USDC-USD"]
+        if not query_symbols:
+            return buy_prices, sell_prices, valid_symbols
+
+        try:
+            resp = self.client.get_best_bid_ask(product_ids=query_symbols)
+            pricebooks = resp["pricebooks"]
+        except Exception:
+            pricebooks = []
+
+        fetched = set()
+        for pb in pricebooks:
+            try:
+                product_id = str(pb["product_id"])
+                bids = pb["bids"]
+                asks = pb["asks"]
+
+                if not bids or not asks:
+                    continue
+
+                bid = float(bids[0]["price"])
+                ask = float(asks[0]["price"])
+
+                if ask > 0 and bid > 0:
+                    buy_prices[product_id] = ask
+                    sell_prices[product_id] = bid
+                    valid_symbols.append(product_id)
+                    fetched.add(product_id)
+                    try:
+                        self._last_good_bid_ask[product_id] = {"ask": ask, "bid": bid, "ts": time.time()}
+                    except Exception:
+                        pass
+            except Exception:
                 continue
 
-            path = f"/api/v1/crypto/marketdata/best_bid_ask/?symbol={symbol}"
-            response = self.make_api_request("GET", path)
-
-            if response and "results" in response:
-                result = response["results"][0]
-                ask = float(result["ask_inclusive_of_buy_spread"])
-                bid = float(result["bid_inclusive_of_sell_spread"])
-
-                buy_prices[symbol] = ask
-                sell_prices[symbol] = bid
-                valid_symbols.append(symbol)
-
-                # Update cache for transient failures later
-                try:
-                    self._last_good_bid_ask[symbol] = {"ask": ask, "bid": bid, "ts": time.time()}
-                except Exception:
-                    pass
-            else:
-                # Fallback to cached bid/ask so account value never drops due to a transient miss
+        # Fallback to cached bid/ask for symbols not fetched
+        for symbol in query_symbols:
+            if symbol not in fetched:
                 cached = None
                 try:
                     cached = self._last_good_bid_ask.get(symbol)
                 except Exception:
                     cached = None
-
                 if cached:
                     ask = float(cached.get("ask", 0.0) or 0.0)
                     bid = float(cached.get("bid", 0.0) or 0.0)
@@ -1265,115 +1316,82 @@ class CryptoAPITrading:
         pnl_pct: Optional[float] = None,
         tag: Optional[str] = None,
     ) -> Any:
-        # Fetch the current price of the asset (for sizing only)
-        current_buy_prices, current_sell_prices, valid_symbols = self.get_price([symbol])
-        current_price = current_buy_prices[symbol]
-        asset_quantity = amount_in_usd / current_price
+        try:
+            # --- exact profit tracking snapshot (BEFORE placing order) ---
+            buying_power_before = self._get_buying_power()
 
-        max_retries = 5
-        retries = 0
+            # Coinbase market_order_buy accepts quote_size (USD amount) directly
+            resp = self.client.market_order_buy(
+                client_order_id=client_order_id,
+                product_id=symbol,
+                quote_size=str(round(amount_in_usd, 2)),
+            )
 
-        while retries < max_retries:
-            retries += 1
-            response = None
+            # Parse response — SDK typed objects support [] access
+            success = resp["success"]
+            sr = resp["success_response"]
+            order_id = sr["order_id"] if sr else None
+
+            if not success or not order_id:
+                return None
+
+            # Persist the pre-order buying power so restarts can reconcile precisely
             try:
-                # Default precision to 8 decimals initially
-                rounded_quantity = round(asset_quantity, 8)
-
-                body = {
-                    "client_order_id": client_order_id,
-                    "side": side,
-                    "type": order_type,
+                self._pnl_ledger.setdefault("pending_orders", {})
+                self._pnl_ledger["pending_orders"][order_id] = {
                     "symbol": symbol,
-                    "market_order_config": {
-                        "asset_quantity": f"{rounded_quantity:.8f}"  # Start with 8 decimal places
-                    }
+                    "side": "buy",
+                    "buying_power_before": float(buying_power_before),
+                    "avg_cost_basis": float(avg_cost_basis) if avg_cost_basis is not None else None,
+                    "pnl_pct": float(pnl_pct) if pnl_pct is not None else None,
+                    "tag": tag,
+                    "created_ts": time.time(),
                 }
-
-                path = "/api/v1/crypto/trading/orders/"
-
-                # --- exact profit tracking snapshot (BEFORE placing order) ---
-                buying_power_before = self._get_buying_power()
-
-                response = self.make_api_request("POST", path, json.dumps(body))
-                if response and "errors" not in response:
-                    order_id = response.get("id", None)
-
-                    # Persist the pre-order buying power so restarts can reconcile precisely
-                    try:
-                        if order_id:
-                            self._pnl_ledger.setdefault("pending_orders", {})
-                            self._pnl_ledger["pending_orders"][order_id] = {
-                                "symbol": symbol,
-                                "side": "buy",
-                                "buying_power_before": float(buying_power_before),
-                                "avg_cost_basis": float(avg_cost_basis) if avg_cost_basis is not None else None,
-                                "pnl_pct": float(pnl_pct) if pnl_pct is not None else None,
-                                "tag": tag,
-                                "created_ts": time.time(),
-                            }
-                            self._save_pnl_ledger()
-                    except Exception:
-                        pass
-
-                    # Wait until the order is actually complete in the system, then use order history executions
-                    if order_id:
-                        order = self._wait_for_order_terminal(symbol, order_id)
-                        state = str(order.get("state", "")).lower().strip() if isinstance(order, dict) else ""
-                        if state != "filled":
-                            # Not filled -> clear pending and do not record a trade
-                            try:
-                                self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
-                                self._save_pnl_ledger()
-                            except Exception:
-                                pass
-                            return None
-
-                        filled_qty, avg_fill_price = self._extract_fill_from_order(order)
-
-                        buying_power_after = self._get_buying_power()
-                        buying_power_delta = float(buying_power_after) - float(buying_power_before)
-
-                        # Record for GUI history (ACTUAL fill from order history)
-                        self._record_trade(
-                            side="buy",
-                            symbol=symbol,
-                            qty=float(filled_qty),
-                            price=float(avg_fill_price) if avg_fill_price is not None else None,
-                            avg_cost_basis=float(avg_cost_basis) if avg_cost_basis is not None else None,
-                            pnl_pct=float(pnl_pct) if pnl_pct is not None else None,
-                            tag=tag,
-                            order_id=order_id,
-                            buying_power_before=buying_power_before,
-                            buying_power_after=buying_power_after,
-                            buying_power_delta=buying_power_delta,
-                        )
-
-                        # Clear pending now that it is recorded
-                        try:
-                            self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
-                            self._save_pnl_ledger()
-                        except Exception:
-                            pass
-
-                    return response  # Successfully placed (and fully filled) order
-
+                self._save_pnl_ledger()
             except Exception:
-                pass #print(traceback.format_exc())
+                pass
 
-            # Check for precision errors
-            if response and "errors" in response:
-                for error in response["errors"]:
-                    if "has too much precision" in error.get("detail", ""):
-                        # Extract required precision directly from the error message
-                        detail = error["detail"]
-                        nearest_value = detail.split("nearest ")[1].split(" ")[0]
+            # Wait until the order is actually complete in the system
+            order = self._wait_for_order_terminal(symbol, order_id)
+            state = str(order.get("state", "")).lower().strip() if isinstance(order, dict) else ""
+            if state != "filled":
+                try:
+                    self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
+                    self._save_pnl_ledger()
+                except Exception:
+                    pass
+                return None
 
-                        decimal_places = len(nearest_value.split(".")[1].rstrip("0"))
-                        asset_quantity = round(asset_quantity, decimal_places)
-                        break
-                    elif "must be greater than or equal to" in error.get("detail", ""):
-                        return None
+            filled_qty, avg_fill_price = self._extract_fill_from_order(order)
+
+            buying_power_after = self._get_buying_power()
+            buying_power_delta = float(buying_power_after) - float(buying_power_before)
+
+            self._record_trade(
+                side="buy",
+                symbol=symbol,
+                qty=float(filled_qty),
+                price=float(avg_fill_price) if avg_fill_price is not None else None,
+                avg_cost_basis=float(avg_cost_basis) if avg_cost_basis is not None else None,
+                pnl_pct=float(pnl_pct) if pnl_pct is not None else None,
+                tag=tag,
+                order_id=order_id,
+                buying_power_before=buying_power_before,
+                buying_power_after=buying_power_after,
+                buying_power_delta=buying_power_delta,
+            )
+
+            try:
+                self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
+                self._save_pnl_ledger()
+            except Exception:
+                pass
+
+            # Return a normalized response dict so callers see success
+            return {"id": order_id, "success": True}
+
+        except Exception:
+            pass
 
         return None
 
@@ -1391,117 +1409,84 @@ class CryptoAPITrading:
         pnl_pct: Optional[float] = None,
         tag: Optional[str] = None,
     ) -> Any:
-        body = {
-            "client_order_id": client_order_id,
-            "side": side,
-            "type": order_type,
-            "symbol": symbol,
-            "market_order_config": {
-                "asset_quantity": f"{asset_quantity:.8f}"
-            }
-        }
+        response = None
+        try:
+            # --- exact profit tracking snapshot (BEFORE placing order) ---
+            buying_power_before = self._get_buying_power()
 
-        path = "/api/v1/crypto/trading/orders/"
+            resp = self.client.market_order_sell(
+                client_order_id=client_order_id,
+                product_id=symbol,
+                base_size=str(asset_quantity),
+            )
 
-        # --- exact profit tracking snapshot (BEFORE placing order) ---
-        buying_power_before = self._get_buying_power()
+            success = resp["success"]
+            sr = resp["success_response"]
+            order_id = sr["order_id"] if sr else None
 
-        response = self.make_api_request("POST", path, json.dumps(body))
+            if not success or not order_id:
+                return None
 
-        if response and isinstance(response, dict) and "errors" not in response:
-            order_id = response.get("id", None)
+            response = {"id": order_id, "success": True}
 
             # Persist the pre-order buying power so restarts can reconcile precisely
             try:
-                if order_id:
-                    self._pnl_ledger.setdefault("pending_orders", {})
-                    self._pnl_ledger["pending_orders"][order_id] = {
-                        "symbol": symbol,
-                        "side": "sell",
-                        "buying_power_before": float(buying_power_before),
-                        "avg_cost_basis": float(avg_cost_basis) if avg_cost_basis is not None else None,
-                        "pnl_pct": float(pnl_pct) if pnl_pct is not None else None,
-                        "tag": tag,
-                        "created_ts": time.time(),
-                    }
-                    self._save_pnl_ledger()
+                self._pnl_ledger.setdefault("pending_orders", {})
+                self._pnl_ledger["pending_orders"][order_id] = {
+                    "symbol": symbol,
+                    "side": "sell",
+                    "buying_power_before": float(buying_power_before),
+                    "avg_cost_basis": float(avg_cost_basis) if avg_cost_basis is not None else None,
+                    "pnl_pct": float(pnl_pct) if pnl_pct is not None else None,
+                    "tag": tag,
+                    "created_ts": time.time(),
+                }
+                self._save_pnl_ledger()
             except Exception:
                 pass
 
-            # Best-effort: pull actual avg fill price + fees from order executions
             actual_price = float(expected_price) if expected_price is not None else None
             actual_qty = float(asset_quantity)
             fees_usd = None
 
-            def _fee_to_float(v: Any) -> float:
-                try:
-                    if v is None:
-                        return 0.0
-                    if isinstance(v, (int, float)):
-                        return float(v)
-                    if isinstance(v, str):
-                        return float(v)
-                    if isinstance(v, dict):
-                        # common shapes: {"amount": "0.12"}, {"value": 0.12}, etc.
-                        for k in ("amount", "value", "usd_amount", "fee", "quantity"):
-                            if k in v:
-                                try:
-                                    return float(v[k])
-                                except Exception:
-                                    continue
-                    return 0.0
-                except Exception:
-                    return 0.0
-
             try:
-                if order_id:
-                    match = self._wait_for_order_terminal(symbol, order_id)
-                    if not match:
-                        return response
+                match = self._wait_for_order_terminal(symbol, order_id)
+                if not match:
+                    return response
 
-                    if str(match.get("state", "")).lower() != "filled":
-                        # Not filled -> clear pending and do not record a trade
-                        try:
-                            self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
-                            self._save_pnl_ledger()
-                        except Exception:
-                            pass
-                        return response
+                if str(match.get("state", "")).lower() != "filled":
+                    try:
+                        self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
+                        self._save_pnl_ledger()
+                    except Exception:
+                        pass
+                    return response
 
-                    execs = match.get("executions", []) or []
-                    total_qty = 0.0
-                    total_notional = 0.0
-                    fee_total = 0.0
+                execs = match.get("executions", []) or []
+                total_qty = 0.0
+                total_notional = 0.0
+                for ex in execs:
+                    try:
+                        q = float(ex.get("quantity", 0.0) or 0.0)
+                        p = float(ex.get("effective_price", 0.0) or 0.0)
+                        total_qty += q
+                        total_notional += (q * p)
+                    except Exception:
+                        continue
 
-                    for ex in execs:
-                        try:
-                            q = float(ex.get("quantity", 0.0) or 0.0)
-                            p = float(ex.get("effective_price", 0.0) or 0.0)
-                            total_qty += q
-                            total_notional += (q * p)
+                if total_qty > 0.0 and total_notional > 0.0:
+                    actual_qty = total_qty
+                    actual_price = total_notional / total_qty
 
-                            # Fees can show up under different keys; handle the common ones.
-                            for fk in ("fee", "fees", "fee_amount", "fee_usd", "fee_in_usd"):
-                                if fk in ex:
-                                    fee_total += _fee_to_float(ex.get(fk))
-                        except Exception:
-                            continue
-
-                    # Some payloads include order-level fee fields too
-                    for fk in ("fee", "fees", "fee_amount", "fee_usd", "fee_in_usd"):
-                        if fk in match:
-                            fee_total += _fee_to_float(match.get(fk))
-
-                    if total_qty > 0.0 and total_notional > 0.0:
-                        actual_qty = total_qty
-                        actual_price = total_notional / total_qty
-
-                    fees_usd = float(fee_total) if fee_total else 0.0
+                # Extract fees from Coinbase order total_fees field
+                try:
+                    fees_usd = float(match.get("total_fees", "0") or "0")
+                except Exception:
+                    fees_usd = 0.0
 
             except Exception:
-                pass #print(traceback.format_exc())
+                pass
 
-            # If we managed to get a better fill price, update the displayed PnL% too
             if avg_cost_basis is not None and actual_price is not None:
                 try:
                     acb = float(avg_cost_basis)
@@ -1510,7 +1495,6 @@ class CryptoAPITrading:
                 except Exception:
                     pass
 
-            # --- exact profit tracking snapshot (AFTER the order is complete) ---
             buying_power_after = self._get_buying_power()
             buying_power_delta = float(buying_power_after) - float(buying_power_before)
 
@@ -1529,13 +1513,14 @@ class CryptoAPITrading:
                 buying_power_delta=buying_power_delta,
             )
 
-            # Clear pending now that it is recorded
             try:
-                if order_id:
-                    self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
-                    self._save_pnl_ledger()
+                self._pnl_ledger.get("pending_orders", {}).pop(order_id, None)
+                self._save_pnl_ledger()
             except Exception:
                 pass
+
+        except Exception:
+            pass
 
         return response
 
@@ -1694,13 +1679,12 @@ class CryptoAPITrading:
             current_sell_price = current_sell_prices.get(full_symbol, 0)
             avg_cost_basis = cost_basis.get(symbol, 0)
 
-            if avg_cost_basis > 0:
-                gain_loss_percentage_buy = ((current_buy_price - avg_cost_basis) / avg_cost_basis) * 100
-                gain_loss_percentage_sell = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * 100
-            else:
-                gain_loss_percentage_buy = 0
-                gain_loss_percentage_sell = 0
-                print(f"  Warning: Average Cost Basis is 0 for {symbol}, Gain/Loss calculation skipped.")
+            # Skip pre-existing holdings that the bot did not buy (no cost basis on record)
+            if avg_cost_basis <= 0:
+                continue
+
+            gain_loss_percentage_buy = ((current_buy_price - avg_cost_basis) / avg_cost_basis) * 100
+            gain_loss_percentage_sell = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * 100
 
             value = quantity * current_sell_price
             triggered_levels_count = len(self.dca_levels_triggered.get(symbol, []))

@@ -1,186 +1,205 @@
-# PowerTrader_AI
+# PowerTrader_AI (Coinbase Fork)
+
 Fully automated crypto trading powered by a custom price prediction AI and a structured/tiered DCA system.
 
-I have not checked any PowerTrader AI forks and cannot confirm or deny their legitimacy.
-
-This is my personal trading bot that I decided to make open source. I made this strategy to match my personal goals. This system is meant to be a foundation/framework for you to build your dream bot! You are responsible for all financial and security risks associated with PowerTrader AI.
-
-I know there are "commonly essential" trading features that are missing (like no stop loss for example). This is by design because many of those things would just not work with this system's strategy as it stands, for my personal reasons below:
-
-I do not believe in selling worthwhile coins at a loss (and why would you trade anything besides worthwhile coins with a trading bot, anyways???).
-
-I DO believe in crypto. I'd rather just wait and maybe add more money to my account if need be so that the bot can buy even more of the coin while the price is down.
-
-I personally feel like many of those common things people use, like stop loss, are actually a trick or something, and I personally have absolutely no problem adding more money to my account to afford more DCA or having to wait for extended periods of time, if need be. In my opinion, anything else is just greedy and desperate, which is the exact OPPOSITE of needed attributes for long term growth. Plus, this is just spot trading... there's no worry of liquidation and it feels to me like many "risk management" tactics are really only meant for futures trading but people blindly apply them to spot trading when it just plain isn't necessary.
-
-I know the AI and the trading strategy are extremely simple because I'm the one that designed and made them. I've been developing this specific trading strategy for almost a decade and the design of the AI system for the last few years. The overall strategy is based on what ACTUALLY works from real trading experience, not just stuff I read in LLM responses or search engine results.
-
-
-Ok now that all of that is out of the way...
-
-I am not selling anything. This trading bot is not a product. This system is for experimentation and education. The only reason you would EVER send me money is if you are voluntarily donating (donation routes can be found at the bottom of this readme :) ). Do not fall for any scams! PowerTrader AI is COMPLETELY FREE FOREVER!
-
-IMPORTANT: This software places real trades automatically. You are responsible for everything it does to your money and your account. Keep your API keys private. I am not giving financial advice. I am not responsible for any losses incurred or any security breaches to your computer (the code is entirely open source and can be confirmed non-malicious). You are fully responsible for doing your own due diligence to learn and understand this trading system and to use it properly. You are fully responsible for all of your money and all of the bot's actions, and any gains or losses.
-
-“It’s an instance-based (kNN/kernel-style) predictor with online per-instance reliability weighting, used as a multi-timeframe trading signal.” - ChatGPT on the type of AI used in this trading bot.
-
-So what exactly does that mean?
-
-When people think AI, they usually think about LLM style AIs and neural networks. What many people don't realize is there are many types of Artificial Intelligence and Machine Learning - and the one in my trading system falls under the "Other" category.
-
-When training for a coin, it goes through the entire history for that coin on multiple timeframes and saves each pattern it sees, along with what happens on the next candle AFTER the pattern. It uses these saved patterns to generate a predicted candle by taking a weighted average of the closest matches in memory to the current pattern in time. This weighted average output is done once for each timeframe, from 1 hour up to 1 week. Each timeframe gets its own predicted candle. The low and high prices from these candles are what are shown as the blue and orange horizontal lines on the price charts. 
-
-After a candle closes, it checks what happened against what it predicted, and adjusts the weight for each "memory pattern" that was used to generate the weighted average, depending on how accurate each pattern was compared to what actually happened.
-
-Yes, it is EXTREMELY simple. Yes, it is STILL considered AI.
-
-Here is how the trading bot utilizes the price prediction ai to automatically make trades:
-
-For determining when to start trades, the AI's Thinker script sends a signal to start a trade for a coin if the ask price for the coin drops below at least 3 of the the AI's predicted low prices for the coin (it predicts the currently active candle's high and low prices for each timeframe across all timeframes from 1hr to 1wk).
-
-For determining when to DCA, it uses either the current price level from the AI that is tied to the current amount of DCA buys that have been done on the trade (for example, right after a trade starts when 3 blue lines get crossed, its first DCA wont happen until the price crosses the 4th line, so on so forth), or it uses the hardcoded drawdown % for its current level, whichever it hits first. It only allows a max of 2 DCAs within a rolling 24hr window to keep from dumping all of your money in too quickly on coins that are having an extended downtrend. Other risk management features can easily be added, as well, with just a bit of Python code!
-
-For determining when to sell, the bot uses a trailing profit margin to maximize the potential gains. The margin line is set at either 5% gain if no DCA has happened on the trade, or 2.5% gain if any DCA has happened. The trailing margin gap is 0.5% (this is the amount the price has to go over the profit margin to begin raising the profit margin up to TRAIL after the price and maximize how much profit is gained once the price drops below the profit margin again and the bot sells the trade.
-
-
-# Setup & First-Time Use (Windows)
-
-THESE INSTRUCTIONS WERE WRITTEN BY AI! PLEASE LET ME KNOW IF THERE ARE ANY ERRORS OR ISSUES WITH THIS SETUP PROCESS!
-
-If you have any crypto holdings in Robinhood currently, either transfer them out of your Robinhood account or sell them to dollars BEFORE going through this setup process!
-
-This page walks you through installing PowerTrader AI from start to finish, in the exact order a first-time user should do it.  
-No coding knowledge needed.  
-These instructions are Windows-based but PowerTrader AI *should* be able to run on any OS.
-
-IMPORTANT: This software places real trades automatically. You are responsible for everything it does to your money and your account. Keep your API keys private. I am not giving financial advice. I am not responsible for any losses incurred or any security breaches to your computer (the code is entirely open source and can be confirmed non-malicious). You are fully responsible for doing your own due diligence to learn and understand this trading system and to use it properly. You are fully responsible for all of your money and all of the bot's actions, and any gains or losses.
+This is a fork of [PowerTrader_AI](https://github.com/garagesteve1/PowerTrader_AI) migrated from Robinhood to **Coinbase Advanced Trade API** using the official `coinbase-advanced-py` SDK.
 
 ---
 
-## Step 1 — Install Python
+## What Changed from Upstream
 
-1. Go to **python.org** and download Python for Windows.
-2. Run the installer.
-3. **Check the box** that says: **“Add Python to PATH”**.
-4. Click **Install Now**.
+| Component | Before (Upstream) | After (This Fork) |
+|-----------|-------------------|-------------------|
+| Broker | Robinhood Crypto Trading API | Coinbase Advanced Trade API |
+| Auth | ED25519 signing via `PyNaCl` | JWT via `coinbase-advanced-py` SDK |
+| Credentials | `r_key.txt` + `r_secret.txt` (base64 key) | `cb_key.txt` + `cb_secret.txt` (API key + PEM secret) |
+| Price data (live) | Robinhood `best_bid_ask` endpoint | Coinbase `get_best_bid_ask()` SDK method |
+| Price data (candles) | KuCoin public API (no account needed) | **Unchanged** — still KuCoin public API |
+| AI / kNN logic | `pt_trainer.py` + `pt_thinker.py` | **Unchanged** |
+| DCA strategy | `pt_trader.py` manage_trades loop | **Unchanged** (same logic, different broker calls) |
+| GUI | `pt_hub.py` with Robinhood wizard | `pt_hub.py` with Coinbase wizard |
 
----
-
-## Step 2 — Download PowerTrader AI
-
-1. Do not download the zip file of the repo! There is an issue I have to fix.
-2. Create a folder on your computer, like: `C:\PowerTraderAI\`
-3. On the PowerTrader_AI repo page, go to the code page for pt_hub.py, click the "Download Raw File" button, save it into the folder you just created.
-4. Repeat that for all files in the repo (except the readme and the license).
-
----
-
-## Step 3 — Install PowerTrader AI (one command)
-
-1. Open **Command Prompt** (Windows key → type **cmd** → Enter).
-2. Go into your PowerTrader AI folder. Example:
-
-   `cd C:\PowerTraderAI`
-
-3. If using Python 3.12 or higher, run this command:
-
-   `python -m pip install setuptools`
-
-4. Install everything PowerTrader AI needs:
-
-   `python -m pip install -r requirements.txt`
+**Files modified:** `requirements.txt`, `pt_trader.py`, `pt_thinker.py`, `pt_hub.py`
+**Files NOT modified:** `pt_trainer.py` (KuCoin candles only, no broker dependency)
 
 ---
 
-## Step 4 — Start PowerTrader AI
+## How It Works
 
-From the same Command Prompt window (inside your PowerTrader folder), run:
+PowerTrader AI has four components:
 
-`python pt_hub.py`
+| File | Role |
+|------|------|
+| `pt_hub.py` | GUI dashboard — launch/stop everything, view charts, change settings |
+| `pt_trainer.py` | Downloads candle history from KuCoin and trains the kNN pattern memory |
+| `pt_thinker.py` | Runs the AI in real-time — compares live prices against predicted levels, writes signal files |
+| `pt_trader.py` | Reads signals, manages positions, places buy/sell orders on Coinbase |
 
-The app that opens is the **PowerTrader Hub**.  
-This is the only thing you need to run day-to-day.
+### The AI
 
----
+It's a kNN (k-Nearest Neighbors) pattern matcher. For each coin, across timeframes from 1 hour to 1 week:
 
-## Step 5 — Set your folder, coins, and Robinhood keys (inside the Hub)
+1. **Training**: Scans the entire candle history, saving each pattern and what happened next
+2. **Prediction**: Takes a weighted average of the closest historical patterns to the current one, producing a predicted candle (high + low) per timeframe
+3. **Learning**: After each candle closes, adjusts pattern weights based on accuracy
 
-### Open Settings
+The blue lines (predicted lows) and orange lines (predicted highs) on the Hub's charts are these predictions.
 
-In the Hub, open **Settings** and do this in order:
+### Trading Strategy
 
-- **Main Neural Folder**: set this to the same folder that contains `pt_hub.py` (recommended easiest).
-- **Choose which coins to trade**: start with **BTC**.
-- **While you are still in Settings**, click **Robinhood API Setup** and do this:
+- **Entry**: When the current ask price drops below 3+ predicted low levels (LONG signal >= 3, SHORT signal = 0) — the trade start level is configurable in settings
+- **DCA (Dollar Cost Averaging)**: If price keeps dropping, buys more at deeper levels. Uses whichever triggers first: the next AI level crossing, or a hardcoded drawdown percentage. Max 2 DCA buys per rolling 24-hour window
+- **Exit**: Trailing profit margin. Starts at 5% gain (2.5% if any DCA happened). Once price exceeds the margin, it trails 0.5% behind the peak. Sells when price drops below the trailing line
 
-1. Click **Generate Keys**.
-2. Copy the **Public Key** shown in the wizard.
-3. On Robinhood, add a new API key and paste that Public Key.
-4. Set permissions to allow trading (the wizard tells you what to select).
-5. Robinhood will show your API Key (often starts with `rh`). Copy it.
-6. Paste the API Key back into the wizard and click **Save**.
-7. Close the wizard and go back to the **Settings** screen.
-8. **NOW** click **Save** in Settings.
+### No Stop Loss (by design)
 
-After saving, you will have two files in your PowerTrader AI folder:  
-`r_key.txt` and `r_secret.txt`  
-Keep them private.
-
-PowerTrader AI uses a simple folder style:  
-**BTC uses the main folder**, and other coins use their own subfolders (like `ETH\`).
+The original author's philosophy: spot trading has no liquidation risk, so rather than sell at a loss, hold and DCA deeper. This is a long-only, conviction-based strategy.
 
 ---
 
-## Step 6 — Train (inside the Hub)
+## Setup
 
-Training builds the system’s coin “memory” so it can generate signals.
+### Prerequisites
 
-1. In the Hub, click **Train All**.
-2. Wait until training finishes.
+- Python 3.10+
+- A Coinbase account with funds
+- Coinbase Advanced Trade API keys
+
+### Step 1 — Install Dependencies
+
+```bash
+cd /path/to/PowerTrader_AI
+pip install -r requirements.txt
+```
+
+This installs: `coinbase-advanced-py`, `requests`, `psutil`, `matplotlib`, `colorama`, `cryptography`, `kucoin-python`
+
+### Step 2 — Get Coinbase API Credentials
+
+1. Go to https://portal.cdp.coinbase.com/access/api
+2. Click **Create API Key**
+3. Give it a nickname (e.g., `PowerTraderAI`)
+4. Under **API restrictions**, enable **Trade** permission
+5. **Important**: Expand **Advanced Settings** and select **ECDSA** (not Ed25519) — the SDK requires ECDSA
+6. Complete 2FA verification
+7. Copy the **API Key Name** — looks like: `organizations/{org_id}/apiKeys/{key_id}`
+8. Copy or download the **API Secret** — a multi-line PEM key starting with `-----BEGIN EC PRIVATE KEY-----`
+
+### Step 3 — Save Credentials
+
+You can either use the GUI wizard (Step 4) or create the files manually:
+
+```bash
+# In the PowerTrader_AI directory:
+echo -n 'organizations/YOUR_ORG/apiKeys/YOUR_KEY' > cb_key.txt
+# For the secret, paste the full PEM including headers:
+cat > cb_secret.txt << 'EOF'
+-----BEGIN EC PRIVATE KEY-----
+YOUR_KEY_CONTENT_HERE
+-----END EC PRIVATE KEY-----
+EOF
+```
+
+Keep these files private. They are your trading credentials.
+
+### Step 4 — Launch the Hub
+
+```bash
+python pt_hub.py
+```
+
+### Step 5 — Configure Settings
+
+In the Hub, open **Settings**:
+
+1. **Main Neural Folder** — set to the folder containing `pt_hub.py`
+2. **Coins** — start with **BTC** (add more later)
+3. **Coinbase API** — if you created the files manually, it should show "Configured". Otherwise, click **Setup Wizard** to paste your credentials
+4. Click **Save**
+
+### Step 6 — Train
+
+1. Click **Train All** in the Hub
+2. Wait for training to finish (downloads KuCoin candle history and builds pattern memory)
+3. Each coin gets its own folder — BTC uses the main folder, others get subfolders (e.g., `ETH/`)
+
+### Step 7 — Start Trading
+
+1. Click **Start All**
+2. The Hub starts `pt_thinker.py` first (AI signals), waits for it to be ready, then starts `pt_trader.py` (executes trades)
+
+That's it. The Hub shows real-time charts with predicted levels and manages both processes.
 
 ---
 
-## Step 7 — Start the system (inside the Hub)
+## Settings Reference
 
-When all coins have completed training, click:
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Trade Start Level | 3 | How many predicted low levels price must cross to trigger a buy |
+| Start Allocation % | 0.5% | Percentage of account value for the initial buy |
+| DCA Multiplier | 2.0x | Each DCA buy is this multiple of the previous buy size |
+| DCA Levels | -2.5%, -5%, -10%, -20%, -30%, -40%, -50% | Hardcoded drawdown triggers for each DCA stage |
+| Max DCA Buys / 24h | 2 | Rate limit on DCA buys per coin per rolling 24-hour window |
+| Profit Margin (no DCA) | 5.0% | Gain required to start trailing (when no DCA buys happened) |
+| Profit Margin (with DCA) | 2.5% | Gain required to start trailing (when DCA buys happened) |
+| Trailing Gap | 0.5% | How far behind the peak the trailing sell line sits |
 
-1. **Start All**
-
-The Hub will:  
-**start pt_thinker.py**, wait until it is ready, then it will **start pt_trader.py**.  
-You don’t need to manually start separate programs. The hub handles everything!
-
----
-
-## Neural Levels (the LONG/SHORT numbers)
-
-- These are signal strength levels from low to high.
-- They are the predicted high and low prices for all timeframes from 1hr to 1wk.
-- They are used to show how stretched a coin's price is and for determining when to start trades and potentially when to DCA for the first few levels of DCA (Whichever price is higher, the Neural level or the hardcoded drawdown % for the current DCA level.
-- Higher number = stronger signal.
-- LONG = buy-direction signal. SHORT = No-start signal
-
-A TRADE WILL START FOR A COIN IF THAT COIN REACHES A LONG LEVEL OF 3 OR HIGHER WHILE HAVING A SHORT LEVEL OF 0! This is adjustable in the settings.
+All settings are editable in the Hub's Settings panel and saved to `gui_settings.json`.
 
 ---
 
-## Adding more coins (later)
+## Neural Levels (LONG/SHORT)
 
-1. Open **Settings**
-2. Add one new coin
-3. Save
-4. Click **Train All**, wait for training to complete
+The Hub displays signal strength levels for each coin:
+
+- **LONG levels** (1-7): How many predicted LOW prices the current ask is below. Higher = stronger buy signal
+- **SHORT levels** (1-7): How many predicted HIGH prices the current ask is above. Higher = stronger no-start signal
+
+A trade starts when **LONG >= Trade Start Level** (default 3) and **SHORT = 0**.
+
+---
+
+## File Structure
+
+```
+PowerTrader_AI/
+  pt_hub.py           # GUI dashboard
+  pt_trainer.py       # AI training (KuCoin candle data)
+  pt_thinker.py       # AI real-time signals
+  pt_trader.py        # Trade execution (Coinbase)
+  requirements.txt    # Python dependencies
+  cb_key.txt          # Coinbase API key (you create this)
+  cb_secret.txt       # Coinbase API secret PEM (you create this)
+  gui_settings.json   # Settings (created by Hub)
+  hub_data/           # Trade history, PnL ledger, status (created at runtime)
+  ETH/                # Per-coin subfolder (created by trainer)
+  XRP/                # etc.
+```
+
+---
+
+## Adding More Coins
+
+1. Open **Settings** in the Hub
+2. Add the coin ticker (e.g., `ETH`, `SOL`)
+3. Click **Save**
+4. Click **Train All** and wait for training to complete
 5. Click **Start All**
 
+The coin must be available on both KuCoin (for candle history) and Coinbase (for trading) as a `-USD` pair.
+
 ---
 
-## Donate
+## Troubleshooting
 
-PowerTrader AI is COMPLETELY free and open source! If you want to support the project, you can donate or become a member:
+**"Coinbase API credentials not found"** — Create `cb_key.txt` and `cb_secret.txt` in the PowerTrader_AI folder, or use the Setup Wizard in Settings.
 
-- Cash App: **$garagesteve**
-- PayPal: **@garagesteve**
-- Facebook (Subscribe to my Facebook page for only $1/month): **https://www.facebook.com/stephen.bryant.hughes**
+**Training takes a long time** — Normal for first run. It downloads full candle history across all timeframes. Subsequent trains are faster.
+
+**No trades happening** — The bot only buys when the AI signal reaches the Trade Start Level (default 3). This can take time. Check the Neural Levels display in the Hub to see current signal strength.
+
+**Price fetch errors** — Verify your Coinbase API key has the correct permissions and uses ECDSA signature algorithm.
 
 ---
 
@@ -190,4 +209,4 @@ PowerTrader AI is released under the **Apache 2.0** license.
 
 ---
 
-IMPORTANT: This software places real trades automatically. You are responsible for everything it does to your money and your account. Keep your API keys private. I am not giving financial advice. I am not responsible for any losses incurred or any security breaches to your computer (the code is entirely open source and can be confirmed non-malicious). You are fully responsible for doing your own due diligence to learn and understand this trading system and to use it properly. You are fully responsible for all of your money and all of the bot's actions, and any gains or losses.
+IMPORTANT: This software places real trades automatically. You are responsible for everything it does to your money and your account. Keep your API keys private. This is not financial advice. You are fully responsible for all gains, losses, and security of your credentials.

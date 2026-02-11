@@ -3,5 +3,5 @@ psutil
 matplotlib
 colorama
 cryptography
-PyNaCl
+coinbase-advanced-py
 kucoin-python

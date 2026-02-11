@@ -1,0 +1,40 @@
+# Credentials — NEVER commit these
+cb_key.txt
+cb_secret.txt
+r_key.txt
+r_secret.txt
+*.bak_*
+
+# Runtime data
+hub_data/
+gui_settings.json
+__pycache__/
+*.pyc
+
+# Training data (large, regenerable)
+memories_*.txt
+memory_weights_*.txt
+neural_perfect_threshold_*.txt
+*_current_price.txt
+trainer_status.json
+trainer_last_*.txt
+
+# Signal files
+long_dca_signal.txt
+short_dca_signal.txt
+alerts_version.txt
+futures_*.txt
+high_bound_prices.html
+low_bound_prices.html
+
+# Per-coin subfolders (training data)
+BTC/
+ETH/
+SOL/
+XRP/
+BNB/
+DOGE/
+HBAR/
+MANA/
+TOSHI/
+AUCTION/

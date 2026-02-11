@@ -8,112 +8,67 @@ import sys
 import datetime
 import traceback
 import linecache
-import base64
 import calendar
-import hashlib
-import hmac
 from datetime import datetime
 import psutil
 import logging
 import json
 import uuid
 
-from nacl.signing import SigningKey
+from coinbase.rest import RESTClient
 
 # -----------------------------
-# Robinhood market-data (current ASK), same source as rhcb.py trader:
-#   GET /api/v1/crypto/marketdata/best_bid_ask/?symbol=BTC-USD
-#   use result["ask_inclusive_of_buy_spread"]
+# Coinbase market-data (current ASK via best_bid_ask)
 # -----------------------------
-ROBINHOOD_BASE_URL = "https://trading.robinhood.com"
-
-_RH_MD = None  # lazy-init so import doesn't explode if creds missing
+_CB_CLIENT = None  # lazy-init so import doesn't explode if creds missing
 
 
-class RobinhoodMarketData:
-    def __init__(self, api_key: str, base64_private_key: str, base_url: str = ROBINHOOD_BASE_URL, timeout: int = 10):
-        self.api_key = (api_key or "").strip()
-        self.base_url = (base_url or "").rstrip("/")
-        self.timeout = timeout
-
-        if not self.api_key:
-            raise RuntimeError("Robinhood API key is empty (r_key.txt).")
-
-        try:
-            raw_private = base64.b64decode((base64_private_key or "").strip())
-            self.private_key = SigningKey(raw_private)
-        except Exception as e:
-            raise RuntimeError(f"Failed to decode Robinhood private key (r_secret.txt): {e}")
-
-        self.session = requests.Session()
-
-    def _get_current_timestamp(self) -> int:
-        return int(time.time())
-
-    def _get_authorization_header(self, method: str, path: str, body: str, timestamp: int) -> dict:
-        # matches the trader's signing format
-        method = method.upper()
-        body = body or ""
-        message_to_sign = f"{self.api_key}{timestamp}{path}{method}{body}"
-        signed = self.private_key.sign(message_to_sign.encode("utf-8"))
-        signature_b64 = base64.b64encode(signed.signature).decode("utf-8")
-
-        return {
-            "x-api-key": self.api_key,
-            "x-timestamp": str(timestamp),
-            "x-signature": signature_b64,
-            "Content-Type": "application/json",
-        }
-
-    def make_api_request(self, method: str, path: str, body: str = "") -> dict:
-        url = f"{self.base_url}{path}"
-        ts = self._get_current_timestamp()
-        headers = self._get_authorization_header(method, path, body, ts)
-
-        resp = self.session.request(method=method.upper(), url=url, headers=headers, data=body or None, timeout=self.timeout)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Robinhood HTTP {resp.status_code}: {resp.text}")
-        return resp.json()
+class CoinbaseMarketData:
+    def __init__(self, api_key: str, api_secret: str):
+        self.client = RESTClient(api_key=api_key, api_secret=api_secret)
 
     def get_current_ask(self, symbol: str) -> float:
         symbol = (symbol or "").strip().upper()
-        path = f"/api/v1/crypto/marketdata/best_bid_ask/?symbol={symbol}"
-        data = self.make_api_request("GET", path)
+        resp = self.client.get_best_bid_ask(product_ids=[symbol])
+        pricebooks = resp["pricebooks"]
 
-        if not data or "results" not in data or not data["results"]:
-            raise RuntimeError(f"Robinhood best_bid_ask returned no results for {symbol}: {data}")
+        if not pricebooks:
+            raise RuntimeError(f"Coinbase best_bid_ask returned no results for {symbol}: {resp}")
 
-        result = data["results"][0]
-        # EXACTLY like rhcb.py's get_price(): ask_inclusive_of_buy_spread
-        return float(result["ask_inclusive_of_buy_spread"])
+        pb = pricebooks[0]
+        asks = pb["asks"]
+
+        if not asks:
+            raise RuntimeError(f"Coinbase best_bid_ask returned no asks for {symbol}")
+
+        return float(asks[0]["price"])
 
 
-def robinhood_current_ask(symbol: str) -> float:
+def coinbase_current_ask(symbol: str) -> float:
     """
-    Returns Robinhood current BUY price (ask_inclusive_of_buy_spread) for symbols like 'BTC-USD'.
-    Reads creds from r_key.txt and r_secret.txt in the same folder as this script.
+    Returns Coinbase current ASK price for symbols like 'BTC-USD'.
+    Reads creds from cb_key.txt and cb_secret.txt in the same folder as this script.
     """
-    global _RH_MD
-    if _RH_MD is None:
+    global _CB_CLIENT
+    if _CB_CLIENT is None:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        key_path = os.path.join(base_dir, "r_key.txt")
-        secret_path = os.path.join(base_dir, "r_secret.txt")
+        key_path = os.path.join(base_dir, "cb_key.txt")
+        secret_path = os.path.join(base_dir, "cb_secret.txt")
 
         if not os.path.isfile(key_path) or not os.path.isfile(secret_path):
             raise RuntimeError(
-                "Missing r_key.txt and/or r_secret.txt next to pt_thinker.py. "
-                "Run pt_trader.py once to create them (and to set your Robinhood API key)."
+                "Missing cb_key.txt and/or cb_secret.txt next to pt_thinker.py. "
+                "Open the GUI and go to Settings → Coinbase API → Setup to create them."
             )
 
-
         with open(key_path, "r", encoding="utf-8") as f:
-            api_key = f.read()
+            api_key = (f.read() or "").strip()
         with open(secret_path, "r", encoding="utf-8") as f:
-            priv_b64 = f.read()
+            api_secret = (f.read() or "").strip()
 
-        _RH_MD = RobinhoodMarketData(api_key=api_key, base64_private_key=priv_b64)
+        _CB_CLIENT = CoinbaseMarketData(api_key=api_key, api_secret=api_secret)
 
-    return _RH_MD.get_current_ask(symbol)
+    return _CB_CLIENT.get_current_ask(symbol)
 
 
 def restart_program():
@@ -730,11 +685,11 @@ def step_coin(sym: str):
 		# reset tf_update for this coin (but DO NOT block-wait; just detect updates and return)
 		tf_update = ['no'] * len(tf_choices)
 
-		# get current price ONCE per coin — use Robinhood's current ASK (same as rhcb trader buy price)
-		rh_symbol = f"{sym}-USD"
+		# get current price ONCE per coin — use Coinbase's current ASK (same as trader buy price)
+		cb_symbol = f"{sym}-USD"
 		while True:
 			try:
-				current = robinhood_current_ask(rh_symbol)
+				current = coinbase_current_ask(cb_symbol)
 				break
 			except Exception as e:
 				print(e)

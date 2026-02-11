@@ -111,6 +111,12 @@ def vprint(*args, **kwargs):
 	if VERBOSE:
 		print(*args, **kwargs)
 
+import sys as _sys
+def _log(msg):
+	"""Flush-immediate progress log so the Hub's Trainers tab shows output in real time."""
+	print(f"[TRAINER] {msg}", flush=True)
+	_sys.stdout.flush()
+
 # Cache memory/weights in RAM (avoid re-reading and re-writing every loop)
 _memory_cache = {}  # tf_choice -> dict(memory_list, weight_list, high_weight_list, low_weight_list, dirty)
 _last_threshold_written = {}  # tf_choice -> float
@@ -272,6 +278,7 @@ try:
 except Exception:
 	pass
 
+_log(f"Starting training for {_arg_coin} (pair: {coin_choice}) | Timeframes: {tf_choices}")
 
 the_big_index = 0
 while True:
@@ -355,6 +362,7 @@ while True:
 	upordown4_4 = []
 	upordown5 = []
 	tf_choice = tf_choices[the_big_index]
+	_log(f"Timeframe {the_big_index+1}/{len(tf_choices)}: {tf_choice} — loading memory...")
 	_mem = load_memory(tf_choice)
 	memory_list = _mem["memory_list"]
 	weight_list = _mem["weight_list"]
@@ -424,6 +432,7 @@ while True:
 			else:
 				continue
 		perc_comp = format((len(history_list)/how_far_to_look_back)*100,'.2f')
+		_log(f"  Downloading {timeframe} candles... {len(history_list)} fetched ({perc_comp}%)")
 		print('gathering history')
 		current_change = len(history_list)-list_len	
 		try:
@@ -456,6 +465,7 @@ while True:
 			index = 1
 	else:
 		index = int(len(history_list)/2)
+	_log(f"  Download complete — {len(history_list)} raw candles. Parsing prices...")
 	price_list = []
 	high_price_list = []
 	low_price_list = []
@@ -508,6 +518,8 @@ while True:
 		price_list_length = 10
 	else:
 		price_list_length = int(len(price_list)*0.5)
+	_log(f"  Processing {len(price_list)} candles for {timeframe} (window={price_list_length})...")
+	_candle_progress_counter = 0
 	while True:
 		while True:
 			loop_i += 1
@@ -616,6 +628,7 @@ while True:
 			# Check stop signal occasionally (much less disk IO)
 			if should_stop_training(loop_i):
 				exited = 'yes'
+				_log(f"  Finished {timeframe} — saving memory...")
 				print('finished processing')
 				file = open('trainer_last_start_time.txt','w+')
 				file.write(str(start_time_yes))
@@ -751,6 +764,7 @@ while True:
 				list_len = 0
 				if the_big_index >= len(tf_choices):
 					if len(number_of_candles) == 1:
+						_log(f"ALL TIMEFRAMES COMPLETE for {_arg_coin}! Training took {int(time.time()-_trainer_started_at)}s")
 						print("Finished processing all timeframes (number_of_candles has only one entry). Exiting.")
 						try:
 							file = open('trainer_last_start_time.txt','w+')
@@ -1265,7 +1279,10 @@ while True:
 						while True:
 							try:
 								try:
-									price_list_length += 1		
+									price_list_length += 1
+									_candle_progress_counter += 1
+									if _candle_progress_counter % 500 == 0:
+										_log(f"  {timeframe}: processed {price_list_length}/{len(price_list)} candles...")
 									which_candle_of_the_prediction_index += 1
 									try:
 										if len(price_list2)>=int(len(price_list)*0.25) and restarted_yet < 2:
@@ -1382,6 +1399,7 @@ while True:
 										print(len(tf_choices))
 										if the_big_index >= len(tf_choices):
 											if len(number_of_candles) == 1:
+												_log(f"ALL TIMEFRAMES COMPLETE for {_arg_coin}! Training took {int(time.time()-_trainer_started_at)}s")
 												print("Finished processing all timeframes (number_of_candles has only one entry). Exiting.")
 												try:
 													file = open('trainer_last_start_time.txt','w+')
