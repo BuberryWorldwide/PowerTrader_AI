@@ -1420,6 +1420,17 @@ class CryptoAPITrading:
                     break
 
             if current_quantities[asset_code] > 0:
+                # If order history can't account for the full holding (e.g. transferred in
+                # or bought before API history), treat unaccounted qty at current market price
+                # so P&L shows breakeven instead of a misleading 28000% gain.
+                if remaining_quantity > 0:
+                    try:
+                        buy_prices, _, _ = self.get_price([f"{asset_code}-USD"])
+                        fallback_price = buy_prices.get(f"{asset_code}-USD", 0.0)
+                        if fallback_price > 0:
+                            total_cost += remaining_quantity * fallback_price
+                    except Exception:
+                        pass
                 cost_basis[asset_code] = total_cost / current_quantities[asset_code]
             else:
                 cost_basis[asset_code] = 0.0
