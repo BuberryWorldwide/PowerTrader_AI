@@ -339,10 +339,16 @@ if not CB_API_KEY or not CB_API_SECRET:
 
 class CryptoAPITrading:
     def __init__(self):
+        print("=" * 60, flush=True)
+        print("  POWERTRADER AI — INITIALIZING", flush=True)
+        print("=" * 60, flush=True)
+
         # keep a copy of the folder map (same idea as trader.py)
         self.path_map = dict(base_paths)
 
+        print("[INIT] Connecting to Coinbase API...", flush=True)
         self.client = RESTClient(api_key=CB_API_KEY, api_secret=CB_API_SECRET)
+        print("[INIT] Coinbase client ready.", flush=True)
 
         self.dca_levels_triggered = {}  # Track DCA levels for each crypto
         self.dca_levels = list(DCA_LEVELS)  # Hard DCA triggers (percent PnL)
@@ -363,12 +369,18 @@ class CryptoAPITrading:
         )
 
 
-
+        print("[INIT] Calculating cost basis...", flush=True)
         self.cost_basis = self.calculate_cost_basis()  # Initialize cost basis at startup
+        print(f"[INIT] Cost basis: {self.cost_basis}", flush=True)
+
+        print("[INIT] Initializing DCA levels from order history...", flush=True)
         self.initialize_dca_levels()  # Initialize DCA levels based on historical buy orders
+        print(f"[INIT] DCA levels: {self.dca_levels_triggered}", flush=True)
 
         # GUI hub persistence
+        print("[INIT] Loading PnL ledger...", flush=True)
         self._pnl_ledger = self._load_pnl_ledger()
+        print("[INIT] Reconciling pending orders...", flush=True)
         self._reconcile_pending_orders()
 
 
@@ -391,6 +403,11 @@ class CryptoAPITrading:
         self._dca_buy_ts = {}         # { "BTC": [ts, ts, ...] } (DCA buys only)
         self._dca_last_sell_ts = {}   # { "BTC": ts_of_last_sell }
         self._seed_dca_window_from_history()
+
+        print("[INIT] Seeded DCA window from history.", flush=True)
+        print("=" * 60, flush=True)
+        print("  INITIALIZATION COMPLETE — STARTING TRADE LOOP", flush=True)
+        print("=" * 60, flush=True)
 
 
 
@@ -560,18 +577,24 @@ class CryptoAPITrading:
         except Exception:
             return 0.0, None
 
-    def _wait_for_order_terminal(self, symbol: str, order_id: str) -> Optional[dict]:
-        """Blocks until order is filled/canceled/rejected, then returns the order dict."""
+    def _wait_for_order_terminal(self, symbol: str, order_id: str, max_retries: int = 30) -> Optional[dict]:
+        """Blocks until order is filled/canceled/rejected, then returns the order dict.
+        Returns None after max_retries attempts to prevent infinite loops."""
         terminal = {"filled", "canceled", "cancelled", "rejected", "failed", "error", "expired"}
-        while True:
+        for attempt in range(max_retries):
             o = self._get_order_by_id(symbol, order_id)
             if not o:
+                print(f"  [WAIT] Order {order_id[:12]}... not found (attempt {attempt+1}/{max_retries})", flush=True)
                 time.sleep(1)
                 continue
             st = str(o.get("state", "")).lower().strip()
             if st in terminal:
+                print(f"  [WAIT] Order {order_id[:12]}... reached terminal state: {st}", flush=True)
                 return o
+            print(f"  [WAIT] Order {order_id[:12]}... state={st} (attempt {attempt+1}/{max_retries})", flush=True)
             time.sleep(1)
+        print(f"  [WAIT] Order {order_id[:12]}... timed out after {max_retries} attempts", flush=True)
+        return None
 
     def _reconcile_pending_orders(self) -> None:
         """
@@ -581,76 +604,74 @@ class CryptoAPITrading:
         try:
             pending = self._pnl_ledger.get("pending_orders", {})
             if not isinstance(pending, dict) or not pending:
+                print("[RECONCILE] No pending orders to reconcile.", flush=True)
                 return
 
-            # Loop until everything pending is resolved (matches your design: bot waits here).
-            while True:
-                pending = self._pnl_ledger.get("pending_orders", {})
-                if not isinstance(pending, dict) or not pending:
-                    break
+            print(f"[RECONCILE] Found {len(pending)} pending order(s) to reconcile...", flush=True)
 
-                progressed = False
+            for order_id, info in list(pending.items()):
+                try:
+                    symbol = str(info.get("symbol", "")).strip()
+                    side = str(info.get("side", "")).strip().lower()
+                    bp_before = float(info.get("buying_power_before", 0.0) or 0.0)
+                    print(f"[RECONCILE] Checking {side} {symbol} order {order_id[:12]}...", flush=True)
 
-                for order_id, info in list(pending.items()):
-                    try:
-                        if self._trade_history_has_order_id(order_id):
-                            # Already recorded (e.g., crash after writing history) -> just clear pending.
-                            self._pnl_ledger["pending_orders"].pop(order_id, None)
-                            self._save_pnl_ledger()
-                            progressed = True
-                            continue
-
-                        symbol = str(info.get("symbol", "")).strip()
-                        side = str(info.get("side", "")).strip().lower()
-                        bp_before = float(info.get("buying_power_before", 0.0) or 0.0)
-
-                        if not symbol or not side or not order_id:
-                            self._pnl_ledger["pending_orders"].pop(order_id, None)
-                            self._save_pnl_ledger()
-                            progressed = True
-                            continue
-
-                        order = self._wait_for_order_terminal(symbol, order_id)
-                        if not order:
-                            continue
-
-                        state = str(order.get("state", "")).lower().strip()
-                        if state != "filled":
-                            # Not filled -> no trade to record, clear pending.
-                            self._pnl_ledger["pending_orders"].pop(order_id, None)
-                            self._save_pnl_ledger()
-                            progressed = True
-                            continue
-
-                        filled_qty, avg_price = self._extract_fill_from_order(order)
-                        bp_after = self._get_buying_power()
-                        bp_delta = float(bp_after) - float(bp_before)
-
-                        self._record_trade(
-                            side=side,
-                            symbol=symbol,
-                            qty=float(filled_qty),
-                            price=float(avg_price) if avg_price is not None else None,
-                            avg_cost_basis=info.get("avg_cost_basis", None),
-                            pnl_pct=info.get("pnl_pct", None),
-                            tag=info.get("tag", None),
-                            order_id=order_id,
-                            fees_usd=None,
-                            buying_power_before=bp_before,
-                            buying_power_after=bp_after,
-                            buying_power_delta=bp_delta,
-                        )
-
-                        # Clear pending now that we recorded it
+                    if self._trade_history_has_order_id(order_id):
+                        print(f"[RECONCILE]   Already in trade history — clearing pending entry.", flush=True)
                         self._pnl_ledger["pending_orders"].pop(order_id, None)
                         self._save_pnl_ledger()
-                        progressed = True
-
-                    except Exception:
                         continue
 
-                if not progressed:
-                    time.sleep(1)
+                    if not symbol or not side or not order_id:
+                        print(f"[RECONCILE]   Invalid entry (missing symbol/side/id) — clearing.", flush=True)
+                        self._pnl_ledger["pending_orders"].pop(order_id, None)
+                        self._save_pnl_ledger()
+                        continue
+
+                    order = self._wait_for_order_terminal(symbol, order_id, max_retries=30)
+                    if not order:
+                        print(f"[RECONCILE]   Could not fetch order after retries — clearing stale entry.", flush=True)
+                        self._pnl_ledger["pending_orders"].pop(order_id, None)
+                        self._save_pnl_ledger()
+                        continue
+
+                    state = str(order.get("state", "")).lower().strip()
+                    if state != "filled":
+                        print(f"[RECONCILE]   Order state is '{state}' (not filled) — clearing.", flush=True)
+                        self._pnl_ledger["pending_orders"].pop(order_id, None)
+                        self._save_pnl_ledger()
+                        continue
+
+                    print(f"[RECONCILE]   Order FILLED — recording trade.", flush=True)
+                    filled_qty, avg_price = self._extract_fill_from_order(order)
+                    bp_after = self._get_buying_power()
+                    bp_delta = float(bp_after) - float(bp_before)
+
+                    self._record_trade(
+                        side=side,
+                        symbol=symbol,
+                        qty=float(filled_qty),
+                        price=float(avg_price) if avg_price is not None else None,
+                        avg_cost_basis=info.get("avg_cost_basis", None),
+                        pnl_pct=info.get("pnl_pct", None),
+                        tag=info.get("tag", None),
+                        order_id=order_id,
+                        fees_usd=None,
+                        buying_power_before=bp_before,
+                        buying_power_after=bp_after,
+                        buying_power_delta=bp_delta,
+                    )
+
+                    self._pnl_ledger["pending_orders"].pop(order_id, None)
+                    self._save_pnl_ledger()
+                    print(f"[RECONCILE]   Trade recorded and pending entry cleared.", flush=True)
+
+                except Exception as e:
+                    print(f"[RECONCILE]   Error processing {order_id[:12]}...: {e} — clearing.", flush=True)
+                    self._pnl_ledger["pending_orders"].pop(order_id, None)
+                    self._save_pnl_ledger()
+
+            print("[RECONCILE] Done.", flush=True)
 
         except Exception:
             pass
@@ -2060,8 +2081,8 @@ class CryptoAPITrading:
 
         alloc_pct = float(START_ALLOC_PCT or 0.005)
         allocation_in_usd = total_account_value * (alloc_pct / 100.0)
-        if allocation_in_usd < 0.5:
-            allocation_in_usd = 0.5
+        if allocation_in_usd < 1.0:
+            allocation_in_usd = 1.0  # Coinbase minimum market order is $1
 
 
         holding_full_symbols = [f"{h['asset_code']}-USD" for h in holdings.get("results", [])]
@@ -2071,8 +2092,8 @@ class CryptoAPITrading:
             base_symbol = crypto_symbols[start_index].upper().strip()
             full_symbol = f"{base_symbol}-USD"
 
-            # Skip if already held
-            if full_symbol in holding_full_symbols:
+            # Skip if already held BY THE BOT (has cost basis). Pre-existing holdings are ignored.
+            if full_symbol in holding_full_symbols and cost_basis.get(base_symbol, 0) > 0:
                 start_index += 1
                 continue
 
@@ -2163,12 +2184,17 @@ class CryptoAPITrading:
 
 
     def run(self):
+        loop_count = 0
         while True:
             try:
+                loop_count += 1
+                if loop_count == 1 or loop_count % 120 == 0:
+                    print(f"\n[LOOP] manage_trades iteration #{loop_count}", flush=True)
                 self.manage_trades()
                 time.sleep(0.5)
             except Exception as e:
-                print(traceback.format_exc())
+                print(f"\n[ERROR] Exception in manage_trades loop: {e}", flush=True)
+                print(traceback.format_exc(), flush=True)
 
 if __name__ == "__main__":
     trading_bot = CryptoAPITrading()

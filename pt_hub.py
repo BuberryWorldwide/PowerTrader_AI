@@ -2569,11 +2569,11 @@ class PowerTraderHub(tk.Tk):
         # LEFT: 3) Live Output (pane)
         # ----------------------------
 
-        # Half-size fixed-width font for live logs (Runner/Trader/Trainers)
+        # Fixed-width font for live logs (Runner/Trader/Trainers)
         _base = tkfont.nametofont("TkFixedFont")
-        _half = max(6, int(round(abs(int(_base.cget("size"))) / 2.0)))
+        _log_size = max(9, abs(int(_base.cget("size"))))
         self._live_log_font = _base.copy()
-        self._live_log_font.configure(size=_half)
+        self._live_log_font.configure(size=_log_size)
 
         logs_frame = ttk.LabelFrame(left_split, text="Live Output")
         self.logs_nb = ttk.Notebook(logs_frame)
