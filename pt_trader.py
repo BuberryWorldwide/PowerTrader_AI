@@ -1844,15 +1844,7 @@ class CryptoAPITrading:
             }
 
         os.system('cls' if os.name == 'nt' else 'clear')
-        _log("--- Account Summary ---")
-        _log(f"Total Account Value: ${total_account_value:.2f}")
-        _log(f"Holdings Value: ${holdings_sell_value:.2f}")
-        _log(f"Percent In Trade: {in_use:.2f}%")
-        _log(
-            f"Trailing PM: start +{self.pm_start_pct_no_dca:.2f}% (no DCA) / +{self.pm_start_pct_with_dca:.2f}% (with DCA) "
-            f"| gap {self.trailing_gap_pct:.2f}%"
-        )
-        _log("--- Current Trades ---")
+        _log(f"Acct ${total_account_value:.2f} | hold ${holdings_sell_value:.2f} ({in_use:.0f}%) | PM +{self.pm_start_pct_no_dca:.1f}/+{self.pm_start_pct_with_dca:.1f}% gap {self.trailing_gap_pct:.1f}%")
 
         positions = {}
         for holding in holdings.get("results", []):
@@ -1999,24 +1991,17 @@ class CryptoAPITrading:
 
 
             _log(
-                f"Symbol: {symbol}"
-                f"  |  DCA: {color}{dca_line_pct:+.2f}%{Style.RESET_ALL} @ {self._fmt_price(current_buy_price)} (Line: {dca_line_price_disp} {dca_line_source} | Next: {next_dca_display})"
-                f"  |  Gain/Loss SELL: {color2}{gain_loss_percentage_sell:.2f}%{Style.RESET_ALL} @ {self._fmt_price(current_sell_price)}"
-                f"  |  DCA Levels Triggered: {triggered_levels}"
-                f"  |  Trade Value: ${value:.2f}"
+                f"{symbol:>4} ${value:>8.2f}"
+                f" | {color}{dca_line_pct:+.1f}%{Style.RESET_ALL} @ {self._fmt_price(current_buy_price)}"
+                f" | sell {color2}{gain_loss_percentage_sell:.1f}%{Style.RESET_ALL}"
+                f" | DCA {triggered_levels} next {next_dca_display}"
             )
 
 
-
-
             if avg_cost_basis > 0:
-                _log(
-                    f"  Trailing Profit Margin"
-                    f"  |  Line: {self._fmt_price(trail_line_disp)}"
-                    f"  |  Above: {above_disp}"
-                )
+                _log(f"     trail {self._fmt_price(trail_line_disp)} {'ABOVE' if above_disp else 'below'} | line {dca_line_price_disp} {dca_line_source}")
             else:
-                _log("  PM/Trail: N/A (avg_cost_basis is 0)")
+                _log("     trail N/A (no cost basis)")
 
 
 
