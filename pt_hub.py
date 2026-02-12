@@ -2120,7 +2120,7 @@ class PowerTraderHub(tk.Tk):
             pass
 
 
-        # Treeview (Current Trades table)
+        # Treeview (Bot Positions table)
         try:
             style.configure(
                 "Treeview",
@@ -3034,7 +3034,7 @@ class PowerTraderHub(tk.Tk):
 
 
         # ----------------------------
-        # RIGHT BOTTOM: Current Trades + Trade History (stacked)
+        # RIGHT BOTTOM: Bot Positions + Holdings + Trade History (stacked)
         # ----------------------------
         right_bottom_split = ttk.Panedwindow(right_split, orient="vertical")
         self._pw_right_bottom_split = right_bottom_split
@@ -3045,8 +3045,8 @@ class PowerTraderHub(tk.Tk):
             self._schedule_paned_clamp(self._pw_right_bottom_split),
         ))
 
-        # Current trades (top)
-        trades_frame = ttk.LabelFrame(right_bottom_split, text="Current Trades")
+        # Bot positions (top)
+        trades_frame = ttk.LabelFrame(right_bottom_split, text="Bot Positions")
 
         cols = (
             "coin",
@@ -3168,6 +3168,58 @@ class PowerTraderHub(tk.Tk):
         ttk.Button(manual_bar, text="Sell All", command=self._manual_sell).pack(side="left", padx=(0, 6))
 
 
+        # Holdings (pre-existing, non-bot coins)
+        holdings_frame = ttk.LabelFrame(right_bottom_split, text="Holdings")
+
+        holdings_cols = ("coin", "qty", "value", "avg_cost", "bid_price", "pnl")
+        holdings_header_labels = {
+            "coin": "Coin", "qty": "Qty", "value": "Value",
+            "avg_cost": "Avg Cost", "bid_price": "Bid Price", "pnl": "PnL%",
+        }
+
+        holdings_table_wrap = ttk.Frame(holdings_frame)
+        holdings_table_wrap.pack(fill="both", expand=True, padx=6, pady=6)
+
+        self.holdings_tree = ttk.Treeview(
+            holdings_table_wrap,
+            columns=holdings_cols,
+            show="headings",
+            height=4,
+        )
+        for c in holdings_cols:
+            self.holdings_tree.heading(c, text=holdings_header_labels.get(c, c))
+            self.holdings_tree.column(c, width=100, anchor="center", stretch=True)
+
+        self.holdings_tree.column("coin", width=70)
+        self.holdings_tree.column("qty", width=95)
+
+        h_ysb = ttk.Scrollbar(holdings_table_wrap, orient="vertical", command=self.holdings_tree.yview)
+        self.holdings_tree.configure(yscrollcommand=h_ysb.set)
+        self.holdings_tree.pack(side="top", fill="both", expand=True)
+        h_ysb.pack(side="right", fill="y")
+
+        def _resize_holdings_columns(*_):
+            try:
+                total_w = int(self.holdings_tree.winfo_width())
+            except Exception:
+                return
+            if total_w <= 1:
+                return
+            try:
+                sb_w = int(h_ysb.winfo_width() or 0)
+            except Exception:
+                sb_w = 0
+            avail = max(200, total_w - sb_w - 8)
+            h_base = {"coin": 70, "qty": 95, "value": 110, "avg_cost": 110, "bid_price": 110, "pnl": 90}
+            h_base_total = sum(h_base.get(c, 100) for c in holdings_cols) or 1
+            scale = avail / h_base_total
+            for c in holdings_cols:
+                w = int(h_base.get(c, 100) * scale)
+                self.holdings_tree.column(c, width=max(60, min(420, w)))
+
+        self.holdings_tree.bind("<Configure>", lambda e: self.after_idle(_resize_holdings_columns))
+        self.after_idle(_resize_holdings_columns)
+
         # Signal log (middle)
         signal_frame = ttk.LabelFrame(right_bottom_split, text="Signal Log")
         signal_wrap = ttk.Frame(signal_frame)
@@ -3221,6 +3273,7 @@ class PowerTraderHub(tk.Tk):
         right_split.add(right_bottom_split, weight=2)
 
         right_bottom_split.add(trades_frame, weight=3)
+        right_bottom_split.add(holdings_frame, weight=1)
         right_bottom_split.add(signal_frame, weight=1)
         right_bottom_split.add(hist_frame, weight=1)
 
@@ -4097,9 +4150,11 @@ class PowerTraderHub(tk.Tk):
             except Exception:
                 pass
 
-            # clear tree (once; subsequent ticks are mtime-short-circuited)
+            # clear trees (once; subsequent ticks are mtime-short-circuited)
             for iid in self.trades_tree.get_children():
                 self.trades_tree.delete(iid)
+            for iid in self.holdings_tree.get_children():
+                self.holdings_tree.delete(iid)
             return
 
 
@@ -4249,9 +4304,11 @@ class PowerTraderHub(tk.Tk):
         except Exception:
             dca_24h_by_coin = {}
 
-        # rebuild tree (only when file changes)
+        # rebuild trees (only when file changes)
         for iid in self.trades_tree.get_children():
             self.trades_tree.delete(iid)
+        for iid in self.holdings_tree.get_children():
+            self.holdings_tree.delete(iid)
 
         for sym, pos in positions.items():
             coin = sym
@@ -4323,8 +4380,28 @@ class PowerTraderHub(tk.Tk):
                 ),
             )
 
+        # --- Populate holdings table (pre-existing, non-bot coins) ---
+        holdings_data = data.get("holdings", {}) or {}
+        for sym, h in holdings_data.items():
+            qty = h.get("quantity", 0.0)
+            try:
+                if float(qty) <= 0.0:
+                    continue
+            except Exception:
+                continue
 
-
+            self.holdings_tree.insert(
+                "",
+                "end",
+                values=(
+                    sym,
+                    f"{float(qty):.8f}".rstrip("0").rstrip("."),
+                    _fmt_money(h.get("value_usd", 0.0)),
+                    _fmt_price(h.get("avg_cost_basis", 0.0)),
+                    _fmt_price(h.get("current_sell_price", 0.0)),
+                    _fmt_pct(h.get("pnl_pct", 0.0)),
+                ),
+            )
 
 
 

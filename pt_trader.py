@@ -22,6 +22,7 @@ PNL_LEDGER_PATH = os.path.join(HUB_DATA_DIR, "pnl_ledger.json")
 ACCOUNT_VALUE_HISTORY_PATH = os.path.join(HUB_DATA_DIR, "account_value_history.jsonl")
 SIGNAL_LOG_PATH = os.path.join(HUB_DATA_DIR, "signal_log.jsonl")
 MANUAL_COMMAND_PATH = os.path.join(HUB_DATA_DIR, "manual_command.json")
+MANUAL_COST_BASIS_PATH = os.path.join(HUB_DATA_DIR, "manual_cost_basis.json")
 
 
 
@@ -395,10 +396,19 @@ class CryptoAPITrading:
             float(self.pm_start_pct_with_dca),
         )
 
+        self._manual_cost_basis = {}
+        self._manual_cost_basis_mtime = 0
 
         _log("[INIT] Calculating cost basis...")
         self.cost_basis = self.calculate_cost_basis()  # Initialize cost basis at startup
         _log(f"[INIT] Cost basis: {self.cost_basis}")
+
+        # Log manual cost basis summary
+        mcb = self._load_manual_cost_basis()
+        if mcb:
+            auto_count = sum(1 for v in mcb.values() if isinstance(v, dict) and v.get("auto_captured"))
+            user_count = len(mcb) - auto_count
+            _log(f"[INIT] Manual cost basis: {auto_count} auto-captured, {user_count} user-set  ({MANUAL_COST_BASIS_PATH})")
 
         _log("[INIT] Initializing DCA levels from order history...")
         self.initialize_dca_levels()  # Initialize DCA levels based on historical buy orders
@@ -594,6 +604,31 @@ class CryptoAPITrading:
         try:
             self._pnl_ledger["last_updated_ts"] = time.time()
             self._atomic_write_json(PNL_LEDGER_PATH, self._pnl_ledger)
+        except Exception:
+            pass
+
+    def _load_manual_cost_basis(self) -> dict:
+        try:
+            if not os.path.isfile(MANUAL_COST_BASIS_PATH):
+                return dict(self._manual_cost_basis)
+            mtime = os.path.getmtime(MANUAL_COST_BASIS_PATH)
+            if self._manual_cost_basis_mtime == mtime:
+                return dict(self._manual_cost_basis)
+            with open(MANUAL_COST_BASIS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            if not isinstance(data, dict):
+                data = {}
+            self._manual_cost_basis = data
+            self._manual_cost_basis_mtime = mtime
+        except Exception:
+            pass
+        return dict(self._manual_cost_basis)
+
+    def _save_manual_cost_basis(self, data: dict) -> None:
+        try:
+            self._atomic_write_json(MANUAL_COST_BASIS_PATH, data)
+            self._manual_cost_basis = data
+            self._manual_cost_basis_mtime = os.path.getmtime(MANUAL_COST_BASIS_PATH)
         except Exception:
             pass
 
@@ -1220,65 +1255,136 @@ class CryptoAPITrading:
         if not holdings or "results" not in holdings:
             return {}
 
-        active_assets = {holding["asset_code"] for holding in holdings.get("results", [])}
         current_quantities = {
             holding["asset_code"]: float(holding["total_quantity"])
             for holding in holdings.get("results", [])
         }
 
+        # Bot's own tracked positions from pnl_ledger (exact USD cost & qty)
+        open_positions = {}
+        try:
+            open_positions = self._pnl_ledger.get("open_positions", {})
+            if not isinstance(open_positions, dict):
+                open_positions = {}
+        except Exception:
+            pass
+
         cost_basis = {}
 
-        for asset_code in active_assets:
-            orders = self.get_orders(f"{asset_code}-USD")
-            if not orders or "results" not in orders:
+        for asset_code, total_qty in current_quantities.items():
+            if total_qty <= 0:
+                cost_basis[asset_code] = 0.0
                 continue
 
-            # Get all filled buy orders, sorted from most recent to oldest
-            buy_orders = [
-                order for order in orders["results"]
-                if order["side"] == "buy" and order["state"] == "filled"
-            ]
-            buy_orders.sort(key=lambda x: x["created_at"], reverse=True)
-
-            remaining_quantity = current_quantities[asset_code]
             total_cost = 0.0
 
-            for order in buy_orders:
-                for execution in order.get("executions", []):
-                    quantity = float(execution["quantity"])
-                    price = float(execution["effective_price"])
+            # --- Bot-traded portion: use exact cost from pnl_ledger ---
+            bot_pos = open_positions.get(asset_code)
+            bot_qty = 0.0
+            if bot_pos and isinstance(bot_pos, dict):
+                bot_qty = float(bot_pos.get("qty", 0.0) or 0.0)
+                bot_cost = float(bot_pos.get("usd_cost", 0.0) or 0.0)
+                # Clamp to actual holdings (ledger might be slightly stale)
+                if bot_qty > total_qty:
+                    bot_qty = total_qty
+                    bot_cost = bot_cost * (total_qty / float(bot_pos.get("qty", 1.0) or 1.0))
+                if bot_qty > 0 and bot_cost > 0:
+                    total_cost += bot_cost
 
-                    if remaining_quantity <= 0:
-                        break
+            # --- Pre-existing portion: everything the bot didn't buy ---
+            pre_existing_qty = total_qty - bot_qty
+            if pre_existing_qty > 1e-12:
+                pre_cost = self._resolve_pre_existing_cost(asset_code, pre_existing_qty)
+                if pre_cost > 0:
+                    total_cost += pre_cost
 
-                    # Use only the portion of the quantity needed to match the current holdings
-                    if quantity > remaining_quantity:
-                        total_cost += remaining_quantity * price
-                        remaining_quantity = 0
-                    else:
-                        total_cost += quantity * price
-                        remaining_quantity -= quantity
-
-                if remaining_quantity <= 0:
-                    break
-
-            if current_quantities[asset_code] > 0:
-                # If order history can't account for the full holding (e.g. transferred in
-                # or bought before API history), treat unaccounted qty at current market price
-                # so P&L shows breakeven instead of a misleading 28000% gain.
-                if remaining_quantity > 0:
-                    try:
-                        buy_prices, _, _ = self.get_price([f"{asset_code}-USD"])
-                        fallback_price = buy_prices.get(f"{asset_code}-USD", 0.0)
-                        if fallback_price > 0:
-                            total_cost += remaining_quantity * fallback_price
-                    except Exception:
-                        pass
-                cost_basis[asset_code] = total_cost / current_quantities[asset_code]
-            else:
-                cost_basis[asset_code] = 0.0
+            cost_basis[asset_code] = total_cost / total_qty
 
         return cost_basis
+
+    def _resolve_pre_existing_cost(self, asset_code: str, pre_existing_qty: float) -> float:
+        """Determine total USD cost for pre-existing (non-bot) holdings.
+
+        Priority: 1) manual_cost_basis.json override  2) paginated Coinbase fill
+        history  3) auto-capture current price as last resort.
+        """
+        # 1) Manual override — user-edited or previously saved
+        manual = self._load_manual_cost_basis()
+        entry = manual.get(asset_code)
+        if entry and isinstance(entry, dict) and float(entry.get("price", 0)) > 0:
+            return pre_existing_qty * float(entry["price"])
+
+        # 2) Walk paginated Coinbase fill history (newest-first) to cover all buys
+        try:
+            remaining = pre_existing_qty
+            fill_cost = 0.0
+            cursor = None
+            pages = 0
+            while remaining > 1e-12 and pages < 20:
+                pages += 1
+                kwargs = {"product_ids": [f"{asset_code}-USD"], "limit": 100}
+                if cursor:
+                    kwargs["cursor"] = cursor
+                resp = self.client.get_fills(**kwargs)
+                fills = resp.get("fills", [])
+                if not fills:
+                    break
+                for fill in fills:
+                    side = str(fill.get("side", "")).upper()
+                    if side != "BUY":
+                        continue
+                    qty = float(fill.get("size", 0) or fill.get("quantity", 0) or 0)
+                    price = float(fill.get("price", 0) or 0)
+                    if qty <= 0 or price <= 0:
+                        continue
+                    used = min(qty, remaining)
+                    fill_cost += used * price
+                    remaining -= used
+                    if remaining <= 1e-12:
+                        break
+                next_cursor = resp.get("cursor", "")
+                if not next_cursor or next_cursor == cursor:
+                    break
+                cursor = next_cursor
+
+            accounted = pre_existing_qty - remaining
+            if accounted > pre_existing_qty * 0.5:
+                avg = fill_cost / accounted if accounted > 0 else 0.0
+                total = fill_cost + remaining * avg  # estimate remainder at same avg
+                # Save to manual file so we don't re-paginate every iteration
+                if avg > 0:
+                    manual[asset_code] = {
+                        "price": round(avg, 6),
+                        "auto_captured": True,
+                        "source": "coinbase_fills",
+                        "captured_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+                    }
+                    self._save_manual_cost_basis(manual)
+                    _log(f"[COST BASIS] Computed pre-existing {asset_code} avg cost from fills: ${avg:,.4f} "
+                         f"({accounted:.6f}/{pre_existing_qty:.6f} qty matched)")
+                    _log(f"[COST BASIS] Edit {MANUAL_COST_BASIS_PATH} to override")
+                return total
+        except Exception as e:
+            _log(f"[COST BASIS] Could not fetch fills for {asset_code}: {e}")
+
+        # 3) Last resort — auto-capture current market price once and freeze
+        fallback_price = 0.0
+        try:
+            buy_prices, _, _ = self.get_price([f"{asset_code}-USD"])
+            fallback_price = buy_prices.get(f"{asset_code}-USD", 0.0)
+        except Exception:
+            pass
+        if fallback_price > 0:
+            manual[asset_code] = {
+                "price": fallback_price,
+                "auto_captured": True,
+                "source": "market_snapshot",
+                "captured_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            self._save_manual_cost_basis(manual)
+            _log(f"[COST BASIS] Auto-captured fallback price for {asset_code}: ${fallback_price:,.2f}")
+            _log(f"[COST BASIS] Edit {MANUAL_COST_BASIS_PATH} to set your actual cost basis")
+        return pre_existing_qty * fallback_price
 
     def get_price(self, symbols: list) -> Dict[str, float]:
         buy_prices = {}
@@ -1640,7 +1746,17 @@ class CryptoAPITrading:
         os.system('cls' if os.name == 'nt' else 'clear')
         _log(f"Acct ${total_account_value:.2f} | hold ${holdings_sell_value:.2f} ({in_use:.0f}%) | PM +{self.pm_start_pct_no_dca:.1f}/+{self.pm_start_pct_with_dca:.1f}% gap {self.trailing_gap_pct:.1f}%")
 
+        # Build set of coins the bot actively manages (from pnl_ledger open_positions)
+        bot_coins = set()
+        try:
+            for k, v in self._pnl_ledger.get("open_positions", {}).items():
+                if isinstance(v, dict) and float(v.get("qty", 0) or 0) > 0:
+                    bot_coins.add(k)
+        except Exception:
+            pass
+
         positions = {}
+        holdings_info = {}
         for holding in holdings.get("results", []):
             symbol = holding["asset_code"]
             full_symbol = f"{symbol}-USD"
@@ -1653,14 +1769,35 @@ class CryptoAPITrading:
             current_sell_price = current_sell_prices.get(full_symbol, 0)
             avg_cost_basis = cost_basis.get(symbol, 0)
 
-            # Skip pre-existing holdings that the bot did not buy (no cost basis on record)
+            value = quantity * current_sell_price
+
+            # --- Route non-bot coins to holdings_info (display-only, no DCA/trail) ---
+            if symbol not in bot_coins:
+                if quantity > 0 and avg_cost_basis > 0:
+                    pnl_pct = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * 100
+                else:
+                    pnl_pct = 0.0
+                holdings_info[symbol] = {
+                    "quantity": quantity,
+                    "avg_cost_basis": avg_cost_basis,
+                    "current_sell_price": current_sell_price,
+                    "value_usd": value,
+                    "pnl_pct": pnl_pct,
+                }
+                try:
+                    file = open(symbol+'_current_price.txt', 'w+')
+                    file.write(str(current_buy_price))
+                    file.close()
+                except Exception:
+                    pass
+                continue
+
             if avg_cost_basis <= 0:
                 continue
 
             gain_loss_percentage_buy = ((current_buy_price - avg_cost_basis) / avg_cost_basis) * 100
             gain_loss_percentage_sell = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * 100
 
-            value = quantity * current_sell_price
             triggered_levels_count = len(self.dca_levels_triggered.get(symbol, []))
             triggered_levels = triggered_levels_count  # Number of DCA levels triggered
 
@@ -2065,8 +2202,8 @@ class CryptoAPITrading:
             base_symbol = crypto_symbols[start_index].upper().strip()
             full_symbol = f"{base_symbol}-USD"
 
-            # Skip if already held BY THE BOT (has cost basis). Pre-existing holdings are ignored.
-            if full_symbol in holding_full_symbols and cost_basis.get(base_symbol, 0) > 0:
+            # Skip if the bot already has an open position for this coin.
+            if base_symbol in bot_coins:
                 start_index += 1
                 continue
 
@@ -2149,6 +2286,7 @@ class CryptoAPITrading:
                     "trailing_gap_pct": float(getattr(self, "trailing_gap_pct", 0.0)),
                 },
                 "positions": positions,
+                "holdings": holdings_info,
             }
             self._append_jsonl(
                 ACCOUNT_VALUE_HISTORY_PATH,
