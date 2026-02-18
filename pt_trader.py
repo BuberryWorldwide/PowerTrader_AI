@@ -1659,6 +1659,10 @@ class CryptoAPITrading:
         # Fetch trading pairs
         trading_pairs = self.get_trading_pairs()
 
+        if account is None or holdings is None:
+            _log("[WARN] API unreachable, skipping this manage_trades cycle")
+            return
+
         # Use the stored cost_basis instead of recalculating
         cost_basis = self.cost_basis
         # Fetch current prices
