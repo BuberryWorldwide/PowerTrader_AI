@@ -2074,8 +2074,12 @@ class CryptoAPITrading:
 
                 _log(f"  DCAing {symbol} (stage {current_stage + 1}) via {reason}.")
 
-                _log(f"  Current Value: ${value:.2f}")
-                dca_amount = value * float(DCA_MULTIPLIER or 0.0)
+                # Base DCA amount on bot's cost basis, not total position value
+                bot_pos = self._pnl_ledger.get("open_positions", {}).get(symbol)
+                bot_usd_cost = float(bot_pos.get("usd_cost", 0.0) or 0.0) if bot_pos else 0.0
+                dca_base = bot_usd_cost if bot_usd_cost > 0 else value
+                _log(f"  Current Value: ${value:.2f} (bot cost: ${bot_usd_cost:.2f})")
+                dca_amount = dca_base * float(DCA_MULTIPLIER or 0.0)
                 _log(f"  DCA Amount: ${dca_amount:.2f}")
                 _log(f"  Buying Power: ${buying_power:.2f}")
 
