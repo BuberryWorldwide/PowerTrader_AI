@@ -1547,6 +1547,7 @@ class CryptoAPITrading:
             order_id = sr["order_id"] if sr else None
 
             if not success or not order_id:
+                _log("[ERROR] place_sell_order(" + symbol + "): order rejected (success=" + str(success) + ")")
                 return None
 
             response = {"id": order_id, "success": True}
@@ -2001,20 +2002,31 @@ class CryptoAPITrading:
 
                     # Forced sell on cross from ABOVE -> BELOW trailing line
                     if state["was_above"] and (current_sell_price < state["line"]):
+                        # Only sell the bot's qty from pnl_ledger, NOT the entire holding
+                        bot_pos = self._pnl_ledger.get("open_positions", {}).get(symbol)
+                        sell_qty = float(bot_pos.get("qty", 0.0) or 0.0) if bot_pos else 0.0
+                        if sell_qty <= 0:
+                            _log(f"  [WARN] Trail sell for {symbol}: no bot qty in ledger, skipping.")
+                            self.trailing_pm.pop(symbol, None)
+                            continue
+                        # Cap at actual holding to avoid over-selling
+                        sell_qty = min(sell_qty, quantity)
+
                         self._log_signal(symbol, "TRAIL_SELL",
                             f"Price {current_sell_price:.8f} < trail line {state['line']:.8f}",
                             details={"sell_price": current_sell_price, "trail_line": state["line"],
                                      "pnl_pct": gain_loss_percentage_sell})
                         _log(
                             f"  Trailing PM hit for {symbol}. "
-                            f"Sell price {current_sell_price:.8f} fell below trailing line {state['line']:.8f}."
+                            f"Sell price {current_sell_price:.8f} fell below trailing line {state['line']:.8f}. "
+                            f"Selling bot qty {sell_qty} (holding {quantity})."
                         )
                         response = self.place_sell_order(
                             str(uuid.uuid4()),
                             "sell",
                             "market",
                             full_symbol,
-                            quantity,
+                            sell_qty,
                             expected_price=current_sell_price,
                             avg_cost_basis=avg_cost_basis,
                             pnl_pct=gain_loss_percentage_sell,
@@ -2028,7 +2040,7 @@ class CryptoAPITrading:
                             # Trade ended -> reset rolling 24h DCA window for this coin
                             self._reset_dca_window_for_trade(symbol, sold=True)
 
-                            _log(f"  Successfully sold {quantity} {symbol}.")
+                            _log(f"  Successfully sold {sell_qty} {symbol} (bot portion).")
                             time.sleep(5)
                             holdings = self.get_holdings()
                             continue
