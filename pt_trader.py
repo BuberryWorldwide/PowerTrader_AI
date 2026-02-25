@@ -2021,30 +2021,30 @@ class CryptoAPITrading:
                             tag="TRAIL_SELL",
                         )
 
-                        if response and isinstance(response, dict) and “errors” not in response:
+                        if response and isinstance(response, dict) and "errors" not in response:
                             trades_made = True
                             self.trailing_pm.pop(symbol, None)  # clear per-coin trailing state on exit
 
                             # Trade ended -> reset rolling 24h DCA window for this coin
                             self._reset_dca_window_for_trade(symbol, sold=True)
 
-                            _log(f”  Successfully sold {quantity} {symbol}.”)
+                            _log(f"  Successfully sold {quantity} {symbol}.")
                             time.sleep(5)
                             holdings = self.get_holdings()
                             continue
                         else:
                             # Sell order failed — keep was_above=True so we retry next tick
-                            _log(f”  [WARN] Trail sell order failed for {symbol}, will retry next tick.”)
+                            _log(f"  [WARN] Trail sell order failed for {symbol}, will retry next tick.")
                             continue
 
 
-                # Save this tick’s position relative to the line.
+                # Save this tick's position relative to the line.
                 # If trailing is active and price is below the line, keep was_above=True
                 # so the sell retries next tick instead of getting permanently stuck.
-                if state[“active”] and not above_now:
-                    state[“was_above”] = True
+                if state["active"] and not above_now:
+                    state["was_above"] = True
                 else:
-                    state[“was_above”] = above_now
+                    state["was_above"] = above_now
 
 
 
