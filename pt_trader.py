@@ -1829,8 +1829,14 @@ class CryptoAPITrading:
             # --- Split total holding into bot qty (from ledger) and overflow (to holdings) ---
             bot_pos = self._pnl_ledger.get("open_positions", {}).get(symbol)
             bot_qty = float(bot_pos.get("qty", 0.0) or 0.0) if bot_pos else 0.0
+            bot_usd_cost = float(bot_pos.get("usd_cost", 0.0) or 0.0) if bot_pos else 0.0
             quantity = min(bot_qty, total_quantity)  # bot portion (capped at actual holding)
             overflow_qty = total_quantity - quantity  # pre-existing portion
+
+            # Bot's own avg cost basis from ledger (usd_cost / qty)
+            if quantity > 0 and bot_usd_cost > 0:
+                avg_cost_basis = bot_usd_cost / quantity
+            # else keep the blended cost_basis from earlier as fallback
 
             if overflow_qty > 0.001 and current_sell_price > 0:
                 overflow_cb = cost_basis.get(symbol, 0)
