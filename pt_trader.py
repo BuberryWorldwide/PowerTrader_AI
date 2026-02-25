@@ -1799,21 +1799,20 @@ class CryptoAPITrading:
             if full_symbol not in valid_symbols or symbol == "USDC":
                 continue
 
-            quantity = float(holding["total_quantity"])
+            total_quantity = float(holding["total_quantity"])
             current_buy_price = current_buy_prices.get(full_symbol, 0)
             current_sell_price = current_sell_prices.get(full_symbol, 0)
             avg_cost_basis = cost_basis.get(symbol, 0)
 
-            value = quantity * current_sell_price
-
             # --- Route non-bot coins to holdings_info (display-only, no DCA/trail) ---
             if symbol not in bot_coins:
-                if quantity > 0 and avg_cost_basis > 0:
+                value = total_quantity * current_sell_price
+                if total_quantity > 0 and avg_cost_basis > 0:
                     pnl_pct = ((current_sell_price - avg_cost_basis) / avg_cost_basis) * 100
                 else:
                     pnl_pct = 0.0
                 holdings_info[symbol] = {
-                    "quantity": quantity,
+                    "quantity": total_quantity,
                     "avg_cost_basis": avg_cost_basis,
                     "current_sell_price": current_sell_price,
                     "value_usd": value,
@@ -1826,6 +1825,29 @@ class CryptoAPITrading:
                 except Exception:
                     pass
                 continue
+
+            # --- Split total holding into bot qty (from ledger) and overflow (to holdings) ---
+            bot_pos = self._pnl_ledger.get("open_positions", {}).get(symbol)
+            bot_qty = float(bot_pos.get("qty", 0.0) or 0.0) if bot_pos else 0.0
+            quantity = min(bot_qty, total_quantity)  # bot portion (capped at actual holding)
+            overflow_qty = total_quantity - quantity  # pre-existing portion
+
+            if overflow_qty > 0.001 and current_sell_price > 0:
+                overflow_cb = cost_basis.get(symbol, 0)
+                overflow_val = overflow_qty * current_sell_price
+                if overflow_qty > 0 and overflow_cb > 0:
+                    overflow_pnl = ((current_sell_price - overflow_cb) / overflow_cb) * 100
+                else:
+                    overflow_pnl = 0.0
+                holdings_info[symbol] = {
+                    "quantity": overflow_qty,
+                    "avg_cost_basis": overflow_cb,
+                    "current_sell_price": current_sell_price,
+                    "value_usd": overflow_val,
+                    "pnl_pct": overflow_pnl,
+                }
+
+            value = quantity * current_sell_price
 
             if avg_cost_basis <= 0:
                 continue
