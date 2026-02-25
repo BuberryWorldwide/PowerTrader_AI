@@ -3,6 +3,7 @@ import json
 import uuid
 import time
 import math
+from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, Optional
 import os
 import colorama
@@ -381,6 +382,9 @@ class CryptoAPITrading:
         self.dca_levels_triggered = {}  # Track DCA levels for each crypto
         self.dca_levels = list(DCA_LEVELS)  # Hard DCA triggers (percent PnL)
 
+
+        # --- Product precision cache (base_increment per product) ---
+        self._base_increments = {}  # {"BTC-USD": "0.00000001", ...}
 
         # --- Trailing profit margin (per-coin state) ---
         # Each coin keeps its own trailing PM line, peak, and "was above line" flag.
@@ -1446,6 +1450,30 @@ class CryptoAPITrading:
         return buy_prices, sell_prices, valid_symbols
 
 
+    def _get_base_increment(self, product_id: str) -> str:
+        """Get and cache base_increment for a product (e.g. 'BTC-USD')."""
+        cached = self._base_increments.get(product_id)
+        if cached:
+            return cached
+        try:
+            resp = self.client.get_product(product_id)
+            inc = resp["base_increment"]
+            if inc:
+                self._base_increments[product_id] = str(inc)
+                return str(inc)
+        except Exception as e:
+            _log(f"[WARN] _get_base_increment({product_id}): {e}")
+        return "0.00000001"  # safe default (8 decimals)
+
+    def _truncate_qty(self, qty: float, product_id: str) -> str:
+        """Truncate qty DOWN to the product's base_increment."""
+        inc = self._get_base_increment(product_id)
+        d_qty = Decimal(str(qty))
+        d_inc = Decimal(inc)
+        truncated = (d_qty / d_inc).to_integral_value(rounding=ROUND_DOWN) * d_inc
+        return str(truncated)
+
+
     def place_buy_order(
         self,
         client_order_id: str,
@@ -1536,10 +1564,12 @@ class CryptoAPITrading:
         try:
             buying_power_before = self._get_buying_power()
 
+            safe_qty = self._truncate_qty(asset_quantity, symbol)
+            _log(f"[SELL] Submitting: {symbol} base_size={safe_qty} (raw={asset_quantity})")
             resp = self.client.market_order_sell(
                 client_order_id=client_order_id,
                 product_id=symbol,
-                base_size=str(asset_quantity),
+                base_size=safe_qty,
             )
 
             success = resp["success"]
